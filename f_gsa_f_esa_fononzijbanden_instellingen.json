@@ -1,0 +1,98 @@
+{
+  "model": "Independent harmonic modes, finite-T Huang-Rhys (Poisson/Skellam)",
+  "temperature_K": 300.0,
+  "phonon_energies_cm1": [
+    250.0,
+    305.0,
+    365.0
+  ],
+  "mode_fractions_assumed": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+  ],
+  "reference_wavelength_nm": 1064.0,
+  "reference_anchor_enabled": true,
+  "reference_peak_normalized_gsa": 1.4441545437623801e-05,
+  "reference_peak_normalized_esa": 0.4841448192026924,
+  "reference_relative_kernel_error_upper_bound": 1.5312301112383354e-30,
+  "GSA": {
+    "3H6 -> 3F4": {
+      "total_huang_rhys_S": 0.05,
+      "electronic_sigma_cm1": 8.5,
+      "kernel_mass": 1.0000000000000002,
+      "omitted_kernel_mass_upper_bound": 4.567831812691841e-37,
+      "max_events_per_mode_each_sign": [
+        14,
+        14,
+        14
+      ],
+      "no_phonon_event_weight": 0.9217869484755452,
+      "net_zero_energy_shift_weight": 0.9221107909214167,
+      "integrated_stick_weight": 1.0
+    },
+    "3H6 -> 3H5": {
+      "total_huang_rhys_S": 0.05,
+      "electronic_sigma_cm1": 8.5,
+      "kernel_mass": 1.0000000000000002,
+      "omitted_kernel_mass_upper_bound": 4.567831812691841e-37,
+      "max_events_per_mode_each_sign": [
+        14,
+        14,
+        14
+      ],
+      "no_phonon_event_weight": 0.9217869484755452,
+      "net_zero_energy_shift_weight": 0.9221107909214167,
+      "integrated_stick_weight": 1.0000000000000002
+    }
+  },
+  "ESA": {
+    "3F4 -> 3H4": {
+      "total_huang_rhys_S": 0.0,
+      "electronic_sigma_cm1": 8.5,
+      "kernel_mass": 1.0,
+      "omitted_kernel_mass_upper_bound": 0.0,
+      "max_events_per_mode_each_sign": [
+        0,
+        0,
+        0
+      ],
+      "no_phonon_event_weight": 1.0,
+      "net_zero_energy_shift_weight": 1.0,
+      "integrated_stick_weight": 1.0
+    },
+    "3F4 -> 3F3": {
+      "total_huang_rhys_S": 0.0,
+      "electronic_sigma_cm1": 8.5,
+      "kernel_mass": 1.0,
+      "omitted_kernel_mass_upper_bound": 0.0,
+      "max_events_per_mode_each_sign": [
+        0,
+        0,
+        0
+      ],
+      "no_phonon_event_weight": 1.0,
+      "net_zero_energy_shift_weight": 1.0,
+      "integrated_stick_weight": 1.0000000000000002
+    },
+    "3F4 -> 3F2": {
+      "total_huang_rhys_S": 0.0,
+      "electronic_sigma_cm1": 8.5,
+      "kernel_mass": 1.0,
+      "omitted_kernel_mass_upper_bound": 0.0,
+      "max_events_per_mode_each_sign": [
+        0,
+        0,
+        0
+      ],
+      "no_phonon_event_weight": 1.0,
+      "net_zero_energy_shift_weight": 1.0,
+      "integrated_stick_weight": 1.0
+    }
+  },
+  "assumptions": "Couplings, mode fractions, electronic widths and line/channel strengths are uncalibrated; no phonon DOS or absolute cross-section fit.",
+  "sources": [
+    "https://doi.org/10.1016/j.omx.2021.100102",
+    "https://doi.org/10.1080/0026897021000046889"
+  ]
+}
