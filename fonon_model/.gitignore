@@ -1,0 +1,9 @@
+__pycache__/
+/resultaten/
+*.pyc
+f_gsa_f_esa_*.csv
+f_gsa_f_esa_*.png
+f_gsa_f_esa_*.svg
+fononband.csv
+fonon_instellingen.json
+pa_*_phonon_band.pdf
