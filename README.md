@@ -93,14 +93,4 @@ De map-README's bevatten de overige opdrachten. De meeste figuur- en RK4-scripts
 | `fonon_model/pa_model.py` | Ongewijzigde locatie: [fonon_model/pa_model.py](fonon_model/pa_model.py) |
 | `fonon_model/pa_fononband.py` | Ongewijzigde locatie: [fonon_model/pa_fononband.py](fonon_model/pa_fononband.py) |
 
-`Fig4_data.npz` staat nu in `passi/`; `Fig4_toelichting.md` heet daar `historical_fig4_notes.md`. Alle oorspronkelijke `f_gsa_f_esa*`-exports staan in `spectra/reference_results/` met dezelfde bestandsnamen en inhoud.
-
-## Interpretatie van berekeningen
-
-Veel lijnbreedtes, bandsterktes en fononkoppelingen zijn modelaannames. De zelfstandige RK4-varianten verschillen onder meer in resonantiecentra en energieoverdrachtsparameters. Een maximale logaritmische helling, een fitdrempel en een analytische stabiliteitsdrempel zijn verschillende grootheden; de README's geven aan welke definitie ieder script gebruikt. De mapindeling verandert deze rekenmodellen niet.
-
-## Controle van de reorganisatie
-
-Op 10 oktober 2026 zijn alle 29 Python-bestanden op syntax en behoud van hun rekenlogica gecontroleerd. Alle 13 verplaatste gegevens- en afbeeldingsbestanden zijn byte voor byte gelijk aan de oorspronkelijke bestanden. De 27 modules zonder onvoorwaardelijke plotworkflow zijn succesvol geïmporteerd; de twee overige scripts zijn afzonderlijk uitgevoerd.
-
-Negen representatieve scripts zijn uitgevoerd: beide resonantiescans, de twee Starkfiguurscripts, de elektronische en discrete-fononexport, de continue-fononexport, de experimentele figuur-3b-fit en PASSI. De twee zelfstandige spectrale CSV-exports bevatten elk 22.001 eindige, niet-negatieve gegevensrijen. Ook populatiebehoud, het 1064-nm-anker van `StarkAbsorptionModel` en de analyse van een gewone kwadratische machtswet zijn gecontroleerd. De langdurige volledige kinetiekscans en breedtesweeps zijn voor deze reorganisatie niet opnieuw uitgevoerd.
+`Fig4_data.npz` staat nu in `passi/`; `Fig4_toelichting.md` heet daar `historical_fig4_notes.md`. Alle oorspronkelijke `f_gsa_f_esa*`-exports staan in `spectra/reference_results/` met dezelfde bestandsnamen en inhoud
