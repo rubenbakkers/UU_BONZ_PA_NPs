@@ -6,6 +6,7 @@ Inclusief analytische berekening van Ith (Vergelijking 5) vs numerieke Ith*.
 
 from __future__ import annotations
 
+from pathlib import Path
 import os  
 import contextlib
 from typing import Dict, Optional, Tuple
@@ -509,7 +510,7 @@ def main():
     wavelengths_nm = [850.0, 900.0, 930.0, 960.0, 980.0, 1000.0, 1030.0, 1040.0, 
                       1050.0, 1060.0, 1070.0, 1080.0, 1090.0, 1130.0, 1180.0]
 
-    save_dir = r"C:\Users\ruben\Documents\BONZ\Script_afbeeldingen"
+    save_dir = str(Path(__file__).resolve().parent / "results")
     os.makedirs(save_dir, exist_ok=True)
     print(f"\nAlle grafieken worden opgeslagen in: {save_dir}\n")
 

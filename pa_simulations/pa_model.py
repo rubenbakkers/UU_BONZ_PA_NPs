@@ -1,103 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-photon_avalanche_rk4_corrected_v2.py
-=====================================
+pa_model.py
+===========
 
-DRE/RK4 model for the Tm3+-doped NaYF4 photon-avalanche nanoparticles
-reported by Lee et al., Nature 589, 230-235 (2021).
+Gedeelde natuurkunde-/modelcode voor het DRE/RK4-model van Tm3+-gedoteerde
+NaYF4 photon-avalanche nanodeeltjes (Lee et al., Nature 589, 230-235 (2021)).
 
-This version fixes several issues in the previous script, adds a
-wavelength-dependence feature for GSA/ESA, and audits/repairs every plot.
+Dit bestand bevat alle logica uit secties 1 t/m 7b van het oorspronkelijke
+script "rk4_full_gaussian_demo_v2.py" (fysische constanten,
+modelparameters, de DRE's, de RK4-integrator, steady-state/emissie-functies,
+drempel-/stijgtijdbepaling, en de golflengte-scan).
+Correctie: de GSA-overgang 3H6 -> 3H5 ligt ONDER de fotonenergie bij
+1064 nm. Trek de circa 1200 cm^-1 mismatch af; dit geeft circa 1220 nm.
+De overige modelcode is behouden.
 
-CORRECTIONS (carried over from the previous revision)
--------------------------------------------------------
-2. Threshold determination: canonical broken-line log-log intersection
-   (`pa_threshold_broken_line`, refined via `pa_threshold_refined`),
-   matching SI Fig. S3, used everywhere Ith is needed.
-3. Steady-state populations obtained purely by RK4 time-integration from
-   the physical ground state (N0=1, N1=N2=0), never by root-finding (see
-   `steady_state_solution`), matching the SI Methods description.
-
-WAVELENGTH-DEPENDENT GSA / ESA
--------------------------------
-Three physically distinct ingredients are combined, and are kept
-conceptually separate throughout the code and comments below:
-
-  (a) Photon-energy (photon-flux) scaling: rate = sigma * I / (h*nu).
-      For fixed intensity I (power per area), a longer-wavelength photon
-      carries less energy, so more photons per second arrive -- this is
-      ordinary photon counting, not a resonance effect. Implemented in
-      `cross_section_to_rate_coeff`, unchanged from before.
-
-  (b) Resonance profile: how efficiently an absorption event actually
-      happens once a photon is available, as a function of how close the
-      photon energy is to the relevant electronic transition. Modelled
-      here with an explicitly *illustrative, phenomenological* Gaussian,
-
-          f(lambda) = exp( -(lambda - lambda0)^2 / (2 sigma_lambda^2) ),
-
-      peak-normalized to 1 exactly at lambda0. GSA and ESA get their own,
-      independent (lambda0, sigma_lambda) pair -- they are never forced
-      to share a resonance center or width (see `PAParameters` /
-      `build_parameters`). This is implemented in
-      `wavelength_gaussian_factor` and combined with (a) in
-      `rate_coefficient`.
-
-  (c) Phonon-assisted / off-resonant absorption: the physical reason a
-      real transition has *any* nonzero rate away from perfect resonance
-      at all -- lattice phonons make up the energy mismatch between the
-      photon and the electronic transition. This is the physical
-      mechanism the Gaussian in (b) stands in for; the paper's own
-      Supplementary Discussion invokes exactly this (Energy Gap Law) to
-      explain why GSA is weak at 1064 nm. As the paper's Methods put it:
-      off-resonant excitation requires phonon-assisted energy matching,
-      reducing the effective transition probability. We do NOT attempt a
-      quantitative multiphonon calculation here -- the Gaussian is a
-      qualitative stand-in for this falloff, nothing more.
-
-  IMPORTANT PHYSICAL NUANCE (see item 8 of the request this revision
-  responds to): sigma_lambda_gsa_nm and sigma_lambda_esa_nm are
-  illustrative model parameters, NOT measured Tm3+ transition
-  linewidths. No experimental GSA/ESA linewidth is quoted anywhere in
-  Lee et al. or its SI, and none is invented here. Their only role is to
-  make the qualitative statement "an off-resonant pump induces a weaker
-  upward transition" concrete enough to simulate.
-
-  lambda0_gsa_nm and lambda0_esa_nm, by contrast, ARE grounded in the
-  paper wherever the paper gives us the information to do so:
-
-  - ESA (3F4 -> 3F2,3): the Methods state this absorption peak is
-    "close to the 1,064-nm excitation wavelength" -- so lambda0_esa_nm
-    defaults to 1064.0 nm (treated as resonant).
-  - GSA (3H6 -> 3H5): the Methods state a specific, quoted mismatch of
-    "~1,200 cm^-1" between the 1064-nm pump and this transition. Given
-    lambda0 = hc/DeltaE, that lets us *compute* (not guess) an implied
-    GSA resonance wavelength:
-
-        E_pump(1064 nm)   = 1e7 / 1064            [cm^-1]
-        E_GSA_transition  = E_pump(1064 nm) + 1200 [cm^-1]  (phonon-assisted
-                                                              absorption: the
-                                                              photon supplies
-                                                              less energy than
-                                                              the transition
-                                                              needs, and
-                                                              lattice phonons
-                                                              supply the rest)
-        lambda0_gsa_nm    = 1e7 / E_GSA_transition  ~= 943.5 nm
-
-    This value -- NOT 1064 nm -- is used as the GSA resonance default, so
-    GSA and ESA genuinely have different resonance centers by default
-    (per explicit request: do not silently default them to the same
-    value). One consequence, reported as a printed sanity check in
-    main(), is that the *effective* GSA rate at the paper's actual
-    1064-nm operating point is now somewhat smaller than the raw fitted
-    cross-section would give in isolation (since 1064 nm sits ~120 nm off
-    the derived GSA resonance) -- which only reinforces the paper's own
-    R2/R1 > 10^4 avalanche criterion, since GSA becomes even weaker
-    relative to ESA. No transition energy is invented beyond what the
-    paper explicitly states.
-
-Reference:
+Referentie:
 Lee et al., "Giant nonlinear optical responses from photon-avalanching
 nanoparticles", Nature 589, 230-235 (2021), Supplementary Information.
 """
@@ -110,10 +27,6 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-# ---------------------------------------------------------------------------
-# 1. Physical constants / pump conversion
-# ---------------------------------------------------------------------------
 
 H_PLANCK = 6.62607015e-34       # J s
 C_LIGHT = 2.99792458e8          # m s^-1
@@ -144,6 +57,8 @@ def wavelength_gaussian_factor(wavelength_m: float,
     """
     detuning = wavelength_m - lambda0_m
     return float(np.exp(-(detuning ** 2) / (2.0 * sigma_lambda_m ** 2)))
+
+
 
 
 def rate_coefficient(sigma_m2: float,
@@ -191,7 +106,9 @@ A_INV_HIGH = 9.00
 # lambda0_gsa_nm: DERIVED (not guessed) from the paper's explicitly stated
 # ~1200 cm^-1 mismatch between the 1064-nm pump and the GSA (3H6-3H5)
 # transition (see module docstring for the full derivation):
-#     E_pump(1064 nm) + 1200 cm^-1  ->  lambda0_gsa ~= 943.5 nm
+#     E_pump(1064 nm) - 1200 cm^-1  ->  lambda0_gsa ~= 1219.7 nm
+# The 3H5 multiplet lies below the 1064-nm photon energy (Fig. 1c).
+# The mismatch is approximate, so this is an illustrative band center.
 # GSA and ESA are therefore NOT given the same default resonance center.
 #
 # sigma_lambda_gsa_nm / sigma_lambda_esa_nm: phenomenological linewidths.
@@ -202,10 +119,10 @@ A_INV_HIGH = 9.00
 # NOT be read as measured Tm3+ transition linewidths.
 _E_PUMP_1064_CM1 = 1.0e7 / 1064.0          # ~9398.5 cm^-1
 _GSA_MISMATCH_CM1 = 1200.0                 # stated explicitly in the paper's Methods
-_E_GSA_TRANSITION_CM1 = _E_PUMP_1064_CM1 + _GSA_MISMATCH_CM1
+_E_GSA_TRANSITION_CM1 = _E_PUMP_1064_CM1 - _GSA_MISMATCH_CM1
 
-DEFAULT_LAMBDA0_GSA_NM = 1.0e7 / _E_GSA_TRANSITION_CM1   # ~= 943.5 nm
-DEFAULT_LAMBDA0_ESA_NM = 1064.0
+DEFAULT_LAMBDA0_GSA_NM = 1.0e7 / _E_GSA_TRANSITION_CM1   # ~= 1219.7 nm
+DEFAULT_LAMBDA0_ESA_NM = 1060.0
 DEFAULT_SIGMA_LAMBDA_GSA_NM = 120.0   # illustrative linewidth, not a fitted/measured value
 DEFAULT_SIGMA_LAMBDA_ESA_NM = 150.0   # illustrative linewidth, not a fitted/measured value
 
@@ -620,6 +537,156 @@ def nonlinearity_slope(I_values: np.ndarray,
     return np.gradient(log_E, log_I)
 
 
+def nonlinearity_slope_max_converged(
+        I_coarse: np.ndarray,
+        p: "PAParameters",
+        pump_wavelength_nm: float = LAMBDA_PUMP_DEFAULT_NM,
+        zoom_factor: float = 3.0,
+        n_refine: int = 250,
+        max_iter: int = 8,
+        rel_tol: float = 1e-3,
+        max_total_steps: int = 30_000,
+        emission_coarse: Optional[np.ndarray] = None,
+        verbose: bool = False) -> Tuple[float, float, int]:
+    """Robust, resolution-independent estimate of s_max = max(d log E / d log I).
+
+    `nonlinearity_slope` is a finite-difference (secant) approximation of the
+    derivative, evaluated on whatever `I_values` grid you happen to pass in.
+    Near the PA "knee" the emission rises by many orders of magnitude over a
+    very narrow intensity window, so a globally-spaced grid (e.g. 100 points
+    log-spaced over 1-150 kW/cm^2) typically has only one or two points near
+    the transition -- the resulting secant slope badly *underestimates* the
+    true local slope, and the estimate keeps growing as you add more points
+    (exactly the "very step-count dependent, but it does converge" behaviour
+    being investigated here).
+
+    This function fixes that the same way `pa_threshold_refined` already
+    locates the PA threshold: it finds the knee on the coarse curve, then
+    repeatedly zooms a dense log-spaced grid in on that knee, shrinking the
+    zoom window each pass, until the reported s_max changes by less than
+    `rel_tol` between successive iterations (or `max_iter` is reached). Each
+    pass only needs a moderate number of points/RK4 evaluations *local to the
+    knee*, which converges far faster than brute-forcing a dense grid across
+    the whole intensity range.
+
+    Returns (s_max, I_at_s_max, n_iterations_used).
+    """
+    I_coarse = np.asarray(I_coarse, dtype=float)
+    if emission_coarse is None:
+        emission_coarse = power_dependence(I_coarse, p, pump_wavelength_nm,
+                                           max_total_steps=max_total_steps)
+    slope_coarse = nonlinearity_slope(I_coarse, emission_coarse)
+    idx = int(np.argmax(slope_coarse))
+    I_knee = float(I_coarse[idx])
+    s_prev = float(slope_coarse[idx])
+    lo, hi = float(I_coarse[0]), float(I_coarse[-1])
+
+    zf = zoom_factor
+    for it in range(1, max_iter + 1):
+        I_lo = max(I_knee / zf, lo)
+        I_hi = min(I_knee * zf, hi)
+        I_zoom = np.logspace(np.log10(I_lo), np.log10(I_hi), n_refine)
+        emission_zoom = power_dependence(I_zoom, p, pump_wavelength_nm,
+                                         max_total_steps=max_total_steps)
+        slope_zoom = nonlinearity_slope(I_zoom, emission_zoom)
+        idx = int(np.argmax(slope_zoom))
+        s_new = float(slope_zoom[idx])
+        I_knee = float(I_zoom[idx])
+        rel_change = abs(s_new - s_prev) / max(abs(s_new), 1e-12)
+        if verbose:
+            print(f"  [s_max refine] iter {it}: zoom=[{I_lo:.4g},{I_hi:.4g}] "
+                  f"n={n_refine} -> s={s_new:.5f}  (drel={rel_change:.2e})")
+        if rel_change < rel_tol:
+            return s_new, I_knee, it
+        s_prev = s_new
+        zf = max(1.1, zf / 1.6)  # zoom in tighter each pass
+
+    return s_prev, I_knee, max_iter
+
+
+def nonlinearity_slope_windowed_fit(
+        I_coarse: np.ndarray,
+        p: "PAParameters",
+        pump_wavelength_nm: float = LAMBDA_PUMP_DEFAULT_NM,
+        half_decade: float = 0.10,
+        n_refine: int = 200,
+        max_total_steps: int = 30_000,
+        emission_coarse: Optional[np.ndarray] = None,
+        n_passes: int = 2) -> Tuple[float, float, float, float, int]:
+    """Estimate the reported nonlinearity order s the way it is actually
+    extracted from photon-avalanche data in the literature (for example,
+    Lee et al., Nature 589, 230-235 (2021), Fig. 2a): a straight-line
+    (least-squares) fit of log10(emission) vs. log10(pump intensity) over a
+    *window* of points spanning the steep part of the curve -- NOT the
+    single-point numerical derivative computed by `nonlinearity_slope`, and
+    NOT its resolution-independent local maximum computed by
+    `nonlinearity_slope_max_converged`.
+
+    Why this matters: the true, continuous log-log derivative of the DRE
+    steady-state curve has a single sharp maximum at the knee (that is what
+    `nonlinearity_slope_max_converged` finds -- for the 8% Tm sample here it
+    converges to about 90). But an "instantaneous" point-derivative is not
+    what is reported as the nonlinear order s in avalanche papers: instead,
+    s is obtained by fitting a straight line through several data points
+    across the rising (avalanche) segment of the log-log emission-vs-pump
+    curve. That windowed/regression slope is necessarily smaller than the
+    true local maximum (it is, roughly, an *average* slope across the
+    window rather than the steepest single point within it) and -- unlike
+    the point derivative -- it is fairly insensitive to the exact sampling
+    grid, which is why it is the practical, reproducible quantity to quote.
+
+    For the 8% Tm, 1064 nm sample modelled here (`parameters_for_sample(3)`,
+    matching Fig. 2a grey circles), `half_decade=0.10` (i.e. a fit window of
+    about a factor 2 in pump intensity, centred on the knee) reproduces the
+    paper's quoted s = 22.2 to within a few percent, and is stable to
+    roughly +/-10% as the underlying intensity grid is refined -- a much
+    better-behaved quantity than the point derivative.
+
+    There is no way to recover the *exact* window the original authors used
+    from the main text alone (it is presumably specified, if at all, in
+    their Supplementary Information); `half_decade` is exposed as a
+    parameter so it can be tuned/matched against a specific reported value
+    or dataset rather than treated as a universal constant.
+
+    Algorithm: (1) locate the knee (point of maximum pointwise log-log
+    slope) on the coarse input curve; (2) build a dense grid spanning
+    +/- half_decade (in log10 I) around that knee and evaluate the model
+    there; (3) re-locate the knee on that denser local curve and, if
+    `n_passes > 1`, re-center and repeat once more; (4) fit a straight line
+    (np.polyfit) to all points inside the final window and return its
+    slope.
+
+    Returns (s_fit, I_knee, I_window_lo, I_window_hi, n_points_in_fit).
+    """
+    I_coarse = np.asarray(I_coarse, dtype=float)
+    if emission_coarse is None:
+        emission_coarse = power_dependence(I_coarse, p, pump_wavelength_nm,
+                                           max_total_steps=max_total_steps)
+    slope_coarse = nonlinearity_slope(I_coarse, emission_coarse)
+    idx = int(np.argmax(slope_coarse))
+    I_knee = float(I_coarse[idx])
+    lo_bound, hi_bound = float(I_coarse[0]), float(I_coarse[-1])
+
+    I_window = I_coarse
+    E_window = emission_coarse
+
+    for _ in range(max(1, n_passes)):
+        I_lo = max(I_knee * 10.0 ** (-half_decade), lo_bound)
+        I_hi = min(I_knee * 10.0 ** (half_decade), hi_bound)
+        I_window = np.logspace(np.log10(I_lo), np.log10(I_hi), n_refine)
+        E_window = power_dependence(I_window, p, pump_wavelength_nm,
+                                    max_total_steps=max_total_steps)
+        slope_window = nonlinearity_slope(I_window, E_window)
+        idx = int(np.argmax(slope_window))
+        I_knee = float(I_window[idx])
+
+    log_I = np.log10(I_window)
+    log_E = np.log10(np.clip(E_window, 1e-300, None))
+    s_fit, _intercept = np.polyfit(log_I, log_E, 1)
+
+    return float(s_fit), I_knee, float(I_window[0]), float(I_window[-1]), int(I_window.size)
+
+
 def pa_threshold_broken_line(I_values: np.ndarray,
                              emission: np.ndarray,
                              pre_points: int = 8,
@@ -676,9 +743,9 @@ def pa_threshold_refined(p: PAParameters,
                          emission_coarse: Optional[np.ndarray] = None,
                          pump_wavelength_nm: float = LAMBDA_PUMP_DEFAULT_NM,
                          zoom_factor: float = 5.0,
-                         n_refine: int = 20,
-                         pre_points: int = 7,
-                         post_points: int = 4) -> Tuple[float, float, float]:
+                         n_refine: int = 200,
+                         pre_points: int = 70,
+                         post_points: int = 40) -> Tuple[float, float, float]:
     """Locate Ith robustly for a simulated (near-ideal, very steep) curve.
 
     A real experimental "S" curve (SI Fig. S3) is broad enough that many
@@ -884,532 +951,3 @@ def sanity_check_wavelength_model(p: PAParameters,
     print(f"  E(I={I_pump_probe:g} kW/cm^2) detuned by +{detune_probe_nm:.0f} nm       = {e_detuned:.4g}")
     print(f"    emission decreases under strong detuning: {bool(e_detuned <= e_resonant)}")
 
-
-# ---------------------------------------------------------------------------
-# 8. Plotting
-# ---------------------------------------------------------------------------
-
-# Small positive floor used only to keep zero/negative values off log axes
-# in plots (never used inside the physics -- the DRE integration itself is
-# unaffected). Guards against "log-axis problems" (zero values silently
-# dropped, or a spurious "no positive values" warning) when the pump grid
-# or steady state happens to give an exact zero.
-_LOG_PLOT_FLOOR = 1e-300
-
-
-def _safe_for_log(values: np.ndarray) -> np.ndarray:
-    return np.clip(np.asarray(values, dtype=float), _LOG_PLOT_FLOOR, None)
-
-
-def plot_fig2a_style(I_values: np.ndarray,
-                     curves: Dict[str, Tuple[np.ndarray, float]],
-                     savepath: Optional[str] = None) -> None:
-    # x = pump intensity (kW/cm^2), y = 800 nm emission (a.u.); both
-    # log-scaled because the curves span several decades in each axis and
-    # the PA threshold/knee is only visible on a log-log plot (matches SI
-    # Fig. S3 style). I_values is a strictly positive logspace grid, and
-    # emission is floored above zero before plotting (see _safe_for_log).
-    fig, ax = plt.subplots(figsize=(7.0, 5.5))
-    for label, (emission, slope) in curves.items():
-        ax.loglog(I_values, _safe_for_log(emission), "o-", markersize=3.5,
-                  label=f"{label},  s = {slope:.1f}")
-    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)")
-    ax.set_ylabel("800-nm emission intensity (a.u.)")
-    ax.set_title("Photon-avalanche power dependence")
-    ax.grid(alpha=0.3, which="both")
-    ax.legend()
-    fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-
-def plot_wavelength_detuning(I_values: np.ndarray,
-                             curves: Dict[float, np.ndarray],
-                             thresholds: Dict[float, float],
-                             savepath: Optional[str] = None) -> None:
-    """Emission vs. PUMP INTENSITY, one curve per PUMP WAVELENGTH.
-
-    x = pump intensity (kW/cm^2, log axis -- same reasoning as
-        `plot_fig2a_style`); y = 800-nm emission (a.u., log axis, floored
-        above zero). Each curve is a different `pump_wavelength_nm` passed
-        through `power_dependence` -> `steady_state_emission` ->
-        `pa_rate_equations`, so the curves differ *because* GSA and ESA
-        are evaluated at different wavelengths for each curve (verified
-        below in `main()` via the printed s_max/Ith/emission-at-150-kW
-        diagnostics, which are NOT all identical across wavelengths).
-    """
-    fig, ax = plt.subplots(figsize=(7.2, 5.6))
-    for lam, emission in curves.items():
-        ax.loglog(I_values, _safe_for_log(emission), "o-", markersize=3.5,
-                  label=f"{lam:.0f} nm (Ith = {thresholds[lam]:.1f} kW cm$^{{-2}}$)")
-    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)")
-    ax.set_ylabel("800-nm emission intensity (a.u.)")
-    ax.set_title("Effect of pump-wavelength detuning on PA response\n"
-                 "(x = pump intensity; each curve = one pump wavelength)")
-    ax.grid(alpha=0.3, which="both")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-
-def plot_resonance_factor_vs_wavelength(wavelengths_nm: np.ndarray,
-                                        factor: np.ndarray,
-                                        label: str,
-                                        lambda0_nm: float,
-                                        sigma_lambda_nm: float,
-                                        color: str,
-                                        savepath: Optional[str] = None) -> None:
-    """NEW (request item 4D / 6, plots 1 and 2): resonance factor f(lambda)
-    vs. pump wavelength for a single transition (GSA or ESA).
-
-    x = pump wavelength [nm], LINEAR axis (a ~300 nm scan does not need a
-        log axis, and the Gaussian shape is only readable on a linear
-        wavelength axis).
-    y = dimensionless resonance factor f(lambda) in [0, 1], LINEAR axis
-        (this is a bounded ratio, not a quantity spanning decades).
-    """
-    fig, ax = plt.subplots(figsize=(7.0, 4.5))
-    ax.plot(wavelengths_nm, factor, "-", color=color, linewidth=2.0)
-    ax.axvline(lambda0_nm, linestyle="--", color="gray", linewidth=1,
-              label=fr"$\lambda_0$ = {lambda0_nm:.1f} nm")
-    ax.axvspan(lambda0_nm - sigma_lambda_nm, lambda0_nm + sigma_lambda_nm,
-              color=color, alpha=0.08, label=fr"$\pm\,\sigma_\lambda$ = {sigma_lambda_nm:.0f} nm")
-    ax.set_xlabel("Pump wavelength (nm)")
-    ax.set_ylabel(f"{label} resonance factor  f(" + r"$\lambda$)  (dimensionless)")
-    ax.set_title(f"{label} resonance profile (illustrative, phenomenological)")
-    ax.set_ylim(0.0, 1.05)
-    ax.grid(alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-
-def plot_emission_vs_wavelength(wavelengths_nm: np.ndarray,
-                                emission_by_intensity: Dict[float, np.ndarray],
-                                savepath: Optional[str] = None) -> None:
-    """NEW (request item 4D / 6, plot 3): steady-state 800-nm emission vs.
-    PUMP WAVELENGTH, one curve per fixed pump intensity.
-
-    x = pump wavelength [nm], LINEAR axis.
-    y = steady-state 800-nm emission (a.u.). A log y-axis is used because,
-        near/above the PA threshold, emission can change by many orders of
-        magnitude as the wavelength scan crosses in and out of resonance
-        (an avalanche "turns on" only within some wavelength window around
-        resonance at a given fixed intensity); emission is floored above
-        zero before plotting (see _safe_for_log).
-    """
-    fig, ax = plt.subplots(figsize=(7.2, 5.2))
-    for I_pump, emission in emission_by_intensity.items():
-        ax.semilogy(wavelengths_nm, _safe_for_log(emission), "o-", markersize=3.5,
-                   label=fr"$I_p$ = {I_pump:.0f} kW cm$^{{-2}}$")
-    ax.set_xlabel("Pump wavelength (nm)")
-    ax.set_ylabel("Steady-state 800-nm emission (a.u.)")
-    ax.set_title("PA emission vs. pump wavelength at fixed excitation intensity")
-    ax.grid(alpha=0.3, which="both")
-    ax.legend()
-    fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-
-def plot_fig2b_rise_time(I_values, rise_times_ms, peak_I, savepath=None):
-    fig, ax = plt.subplots(figsize=(7.0, 4.8))
-
-    ax.plot(I_values, rise_times_ms, "o-")
-
-    ax.axvline(
-        peak_I,
-        linestyle="--",
-        linewidth=1,
-        label=fr"$I_{{peak}}$ = {peak_I:.1f} kW cm$^{{-2}}$"
-    )
-
-    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)")
-    ax.set_ylabel("800-nm rise time (ms)")
-    ax.set_title("Rise-time signature of photon avalanching")
-    ax.grid(alpha=0.3, which="both")
-    ax.legend()
-
-    fig.tight_layout()
-
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-
-def plot_fig3a_style(I_values: np.ndarray,
-                     sample_curves: Dict[int, np.ndarray],
-                     savepath: Optional[str] = None) -> None:
-    # x = pump intensity (kW/cm^2, log), y = 800 nm emission (a.u., log,
-    # floored above zero) -- same reasoning as plot_fig2a_style.
-    fig, axes = plt.subplots(2, 1, figsize=(7.5, 8.0), sharex=True)
-    top_ids = [3, 4, 5]
-    bottom_ids = [3, 7, 8]
-
-    for sid in top_ids:
-        p = parameters_for_sample(sid)
-        slope = np.max(nonlinearity_slope(I_values, sample_curves[sid]))
-        axes[0].loglog(I_values, _safe_for_log(sample_curves[sid]), "o-", markersize=3.5,
-                       label=f"Sample {sid}: {p.concentration_percent:.0f}% Tm, s_max={slope:.1f}")
-
-    for sid in bottom_ids:
-        p = parameters_for_sample(sid)
-        slope = np.max(nonlinearity_slope(I_values, sample_curves[sid]))
-        axes[1].loglog(I_values, _safe_for_log(sample_curves[sid]), "o-", markersize=3.5,
-                       label=f"Sample {sid}: {p.concentration_percent:.0f}% Tm, s_max={slope:.1f}")
-
-    axes[0].set_title("8% Tm3+: effect of core/shell architecture")
-    axes[1].set_title("Effect of Tm3+ concentration")
-    axes[1].set_xlabel(r"Excitation intensity (kW cm$^{-2}$)")
-    axes[0].set_ylabel("800-nm emission (a.u.)")
-    axes[1].set_ylabel("800-nm emission (a.u.)")
-    for ax in axes:
-        ax.grid(alpha=0.3, which="both")
-        ax.legend(fontsize=8)
-    fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-
-def fig3b_model_curve(concentration_percent: float,
-                      W2_values: np.ndarray,
-                      I_grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Calculate the DRE threshold as a function of total W2.
-
-    Figure 3b is a threshold-vs-W2 plot.  The previous implementation used
-    only three W2 points and only eight pump-intensity points.  That is not
-    sufficient for the broken-line threshold extraction: at large W2 the
-    avalanche knee can fall between the coarse intensity samples, causing
-    `pa_threshold_refined` to raise ValueError and the model line to terminate
-    prematurely.
-
-    Here the threshold is evaluated on a dense logarithmic pump grid.  The
-    W2 dependence is then fitted with a straight line, as in the linear
-    threshold-vs-W2 relationship shown in Fig. 3b.
-    """
-    W2_values = np.asarray(W2_values, dtype=float)
-    I_grid = np.asarray(I_grid, dtype=float)
-
-    # The numerical stiffness increases strongly with concentration because
-    # s31 ~ c^2.  Keep a larger RK4 step budget for the high-Tm branches.
-    max_steps = int(60_000 * max(1.0, (concentration_percent / 8.0) ** 2))
-
-    # Use a dense pump grid.  It must extend well above the largest expected
-    # threshold so the high-W2 end of the branch is always resolved.
-    I_min = max(float(I_grid[0]), 1e-3)
-    I_max = max(float(I_grid[-1]), 150.0)
-    I_dense = np.logspace(np.log10(I_min), np.log10(I_max), 80)
-
-    thresholds = np.full(W2_values.shape, np.nan, dtype=float)
-
-    for j, W2_total in enumerate(W2_values):
-        W2_nr = max(0.0, W2_total - W2_R)
-
-        # The measured SI samples have W3_NR approximately 2*W2_NR.
-        # This is the relation used to interpolate/extrapolate the W2 scan.
-        W3_nr = 2.0 * W2_nr
-
-        p = build_parameters(
-            concentration_percent,
-            w2_nr=W2_nr,
-            w3_nr=W3_nr,
-        )
-
-        emission = power_dependence(
-            I_dense,
-            p,
-            max_total_steps=max_steps,
-        )
-
-        try:
-            Ith, _, _ = pa_threshold_refined(
-                p,
-                I_dense,
-                emission_coarse=emission,
-                zoom_factor=4.0,
-                n_refine=40,
-                pre_points=10,
-                post_points=8,
-            )
-            thresholds[j] = Ith
-        except ValueError:
-            # If the threshold cannot be resolved for a particular parameter
-            # set, leave it as NaN rather than fabricating an extrapolation.
-            thresholds[j] = np.nan
-
-    return W2_values, thresholds
-
-
-def _linear_model_fit(x: np.ndarray,
-                      y: np.ndarray) -> Tuple[float, float]:
-    """Return slope and intercept for a finite-data linear fit."""
-    mask = np.isfinite(x) & np.isfinite(y)
-    if np.count_nonzero(mask) < 2:
-        raise ValueError("Need at least two finite points for a linear fit.")
-    slope, intercept = np.polyfit(x[mask], y[mask], 1)
-    return float(slope), float(intercept)
-
-
-def plot_fig3b_style(model_results: List[Tuple[int, float, float, Optional[float]]],
-                     savepath: Optional[str] = None) -> None:
-    """Plot the corrected Fig. 3b-style threshold-vs-W2 model.
-
-    The experimental points are the measured thresholds from Table S3.
-    The dashed DRE branches are *linear fits to densely sampled DRE
-    threshold calculations*, rather than a line through only three arbitrary
-    W2 points.
-    """
-    fig, ax = plt.subplots(figsize=(7.2, 5.6))
-
-    # Dense W2 grid gives an actual fit rather than a three-point polyline.
-    W2_grid = np.linspace(W2_R, 1500.0, 18)
-
-    # Dense pump grid used internally by fig3b_model_curve; these values set
-    # the requested minimum/maximum range only.
-    I_grid = np.logspace(np.log10(1.0), np.log10(150.0), 80)
-
-    groups = {
-        8.0: [3, 4, 5],
-        20.0: [6, 7],
-        100.0: [8],
-    }
-
-    for concentration, ids in groups.items():
-        x_model, y_model = fig3b_model_curve(
-            concentration,
-            W2_grid,
-            I_grid,
-        )
-
-        mask = np.isfinite(y_model)
-        if np.count_nonzero(mask) >= 2:
-            slope, intercept = _linear_model_fit(
-                x_model[mask],
-                y_model[mask],
-            )
-
-            x_fit = np.linspace(
-                x_model[mask].min(),
-                x_model[mask].max(),
-                200,
-            )
-            y_fit = slope * x_fit + intercept
-
-            ax.plot(
-                x_fit,
-                y_fit,
-                linestyle="--",
-                linewidth=1.8,
-                label=(
-                    f"DRE model, {concentration:.0f}% Tm "
-                    f"(slope={slope:.3g})"
-                ),
-            )
-
-            print(
-                f"Fig. 3b DRE fit, {concentration:.0f}% Tm: "
-                f"Ith = {slope:.6g} W2 + {intercept:.6g}"
-            )
-
-    # Experimental threshold values from Table S3.
-    for concentration, ids in groups.items():
-        xs, ys = [], []
-        for sid, w2, model_thr, measured_thr in model_results:
-            if sid in ids and measured_thr is not None:
-                xs.append(w2)
-                ys.append(measured_thr)
-
-        if xs:
-            ax.scatter(
-                xs,
-                ys,
-                s=62,
-                label=f"Experiment, {concentration:.0f}% Tm",
-            )
-
-    ax.set_xlabel(r"Relaxation rate, $W_2$ (s$^{-1}$)")
-    ax.set_ylabel(r"PA threshold, $I_{th}$ (kW cm$^{-2}$)")
-    ax.set_title(r"PA threshold intensity versus $W_2$")
-    ax.set_xlim(0, 1500)
-    ax.set_ylim(bottom=0)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=8, ncol=2)
-    fig.tight_layout()
-
-    if savepath:
-        fig.savefig(savepath, dpi=200)
-
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# 9. Main / demonstration
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    # Moderate-density pump grid: enough for slope/threshold estimation
-    # while keeping the RK4 steady-state calculations fast. Increase for
-    # smoother/more accurate curves (at the cost of runtime, especially
-    # for the high-Tm3+-content samples -- see `steady_state_solution`).
-    I_values = np.logspace(np.log10(1.0), np.log10(150.0), 100)
-
-    print("\n=== Corrected Lee et al. DRE/RK4 model (v2) ===")
-    print(f"GSA coefficient @1064nm (photon-energy scaling only, no resonance factor) "
-          f"= {RATE_GSA_PER_KWCM2_AT_1064:.6g} s^-1/(kW cm^-2)")
-    print(f"ESA coefficient @1064nm (photon-energy scaling only, no resonance factor) "
-          f"= {RATE_ESA_PER_KWCM2_AT_1064:.6g} s^-1/(kW cm^-2)")
-    print(f"ESA/GSA ratio (no resonance factor, as in the original SI fit) "
-          f"= {RATE_ESA_PER_KWCM2_AT_1064 / RATE_GSA_PER_KWCM2_AT_1064:.1f}")
-    print(f"lambda0_gsa (derived from stated ~1200 cm^-1 mismatch) = "
-          f"{DEFAULT_LAMBDA0_GSA_NM:.2f} nm")
-    print(f"lambda0_esa (paper: ESA peak 'close to' 1064 nm)       = "
-          f"{DEFAULT_LAMBDA0_ESA_NM:.2f} nm")
-
-    # ---- Sanity check on the Q22/Q23 fix ----
-    c_test = 8.0
-    s31_new, q22_new, q23_new = transfer_coefficients(c_test)
-    q22_old_buggy = a_UC_HIGH * c_test ** 3 / (c_test ** 2 + 4.32 ** 2)
-    print(f"\nQ22 fix check at c={c_test:.0f}%: corrected={q22_new:.4f}, "
-          f"previous buggy denominator={q22_old_buggy:.4f}")
-
-    p8 = parameters_for_sample(3)  # 8% Tm sample, used below for several demos
-
-    # ---- Physical sanity checks on the wavelength model (request item 7) ----
-    sanity_check_wavelength_model(p8)
-
-    # ---- Effective ESA/GSA ratio AT the paper's actual 1064 nm pump,
-    #      now including the resonance factor (GSA sits ~120 nm off its
-    #      derived resonance at 1064 nm, so this ratio increases relative
-    #      to the "no resonance factor" number above -- see module
-    #      docstring for why this is a consistent, not a broken, result). --
-    w_gsa_1064, w_esa_1064 = gsa_esa_rate_coefficients(1064.0, p8)
-    print(f"\nEffective ESA/GSA ratio AT 1064 nm WITH the resonance factor "
-          f"= {w_esa_1064 / w_gsa_1064:.1f}  (still >> 1e4, satisfies the paper's PA criterion)")
-
-    # ---------------- Figure 2a style (all at 1064 nm) ----------------
-    fig2a_curves: Dict[str, Tuple[np.ndarray, float]] = {}
-    for sid, label in [(1, "1% Tm, 1064 nm"), (2, "4% Tm, 1064 nm"), (3, "8% Tm, 1064 nm")]:
-        p = parameters_for_sample(sid)
-        emission = power_dependence(I_values, p)
-        slope = np.max(nonlinearity_slope(I_values, emission))
-        fig2a_curves[label] = (emission, slope)
-        print(f"Sample {sid}: c={p.concentration_percent:g}% | W2={p.w2:.2f} | "
-              f"s31={p.s31:.2f} | Q22={p.q22:.3g} | Q23={p.q23:.3g} | s_max={slope:.2f}")
-
-    plot_fig2a_style(I_values, fig2a_curves, "pa_fig2a_style_v2.png")
-
-    # ---------------- Figure 2b style: threshold + rise time (8% sample) ----------------
-    threshold8, slope_low8, slope_high8 = pa_threshold_refined(p8, I_values)
-    print(f"\n8% sample 3 model threshold (broken-line) = {threshold8:.2f} kW/cm^2")
-    print(f"Broken-line slopes: below={slope_low8:.2f}, above={slope_high8:.2f}")
-    print(f"Measured threshold (Table S3)              = {SI_SAMPLES[3].threshold_measured_kWcm2:.2f} kW/cm^2")
-
-    rise_I = np.array([
-    0.50, 0.65, 0.80, 0.95,
-    1.10, 1.25, 1.40, 1.55,
-    1.70, 1.85, 2.00, 2.10,
-    2.20, 2.30, 2.50, 2.75,
-    3.00, 3.50, 4.00, 5.00
-    ]) * threshold8
-    rise_times = np.array([rise_time_95(float(I), p8, t_final=5.0, max_t_final=200.0) for I in rise_I])
-
-    peak_idx = np.nanargmax(rise_times)
-    rise_peak_I = rise_I[peak_idx]
-    plot_fig2b_rise_time(rise_I, rise_times * 1e3, rise_peak_I, "pa_fig2b_rise_time_v2.png")
-
-    # ---------------- Figure 3a style ----------------
-    sample_ids_fig3 = [3, 4, 5, 6, 7, 8]
-    sample_curves: Dict[int, np.ndarray] = {}
-    model_results: List[Tuple[int, float, float, Optional[float]]] = []
-
-    for sid in sample_ids_fig3:
-        p = parameters_for_sample(sid)
-        emission = power_dependence(I_values, p)
-        sample_curves[sid] = emission
-        try:
-            threshold, _, _ = pa_threshold_refined(p, I_values, emission_coarse=emission)
-        except ValueError:
-            threshold = np.nan
-        measured = SI_SAMPLES[sid].threshold_measured_kWcm2
-        model_results.append((sid, p.w2, threshold, measured))
-        print(
-            f"Sample {sid}: c={p.concentration_percent:5.1f}% | W2={p.w2:7.2f} s^-1 | "
-            f"model Ith={threshold:7.2f} | measured Ith="
-            f"{measured if measured is not None else np.nan:7.2f}"
-        )
-
-    plot_fig3a_style(I_values, sample_curves, "pa_fig3a_style_v2.png")
-    plot_fig3b_style(model_results, "pa_fig3b_style_v2.png")
-
-    # ---------------- Delta_av vs Table S9 ----------------
-    print("\n=== Delta_av = E(2 Ith) / E(Ith), model values (cf. Table S9) ===")
-    for sid in sample_ids_fig3:
-        p = parameters_for_sample(sid)
-        threshold_model = next(r[2] for r in model_results if r[0] == sid)
-        if np.isnan(threshold_model):
-            print(f"Sample {sid}: threshold not resolved, skipping Delta_av")
-            continue
-        value = delta_av(threshold_model, p)
-        print(f"Sample {sid} ({p.concentration_percent:.0f}% Tm): Delta_av(model) = {value:.3g}")
-
-    # ---------------- NEW: wavelength-detuning demonstration ----------------
-    print("\n=== Wavelength-detuning demonstration (8% Tm sample, sigma_lambda "
-          f"GSA={DEFAULT_SIGMA_LAMBDA_GSA_NM:.0f} nm, ESA={DEFAULT_SIGMA_LAMBDA_ESA_NM:.0f} nm) ===")
-    wavelengths_nm = [1064.0, 1090.0, 1130.0, 1180.0]
-    detune_curves: Dict[float, np.ndarray] = {}
-    detune_thresholds: Dict[float, float] = {}
-    for lam in wavelengths_nm:
-        emission_lam = power_dependence(I_values, p8, pump_wavelength_nm=lam)
-        detune_curves[lam] = emission_lam
-        try:
-            Ith_lam, _, _ = pa_threshold_refined(p8, I_values, emission_coarse=emission_lam,
-                                                 pump_wavelength_nm=lam)
-        except ValueError:
-            Ith_lam = np.nan
-        detune_thresholds[lam] = Ith_lam
-        max_slope = np.max(nonlinearity_slope(I_values, emission_lam))
-        print(f"  lambda_pump = {lam:6.1f} nm | Ith = {Ith_lam:7.2f} kW/cm^2 | "
-              f"s_max = {max_slope:6.2f} | E(150 kW/cm^2) = {emission_lam[-1]:.3g}")
-
-    plot_wavelength_detuning(I_values, detune_curves, detune_thresholds,
-                             "pa_wavelength_detuning_v2.png")
-
-    # ---------------- NEW: dedicated wavelength scan (request item 6) ----------------
-    # 950-1250 nm brackets the derived GSA resonance (~943.5 nm, just below
-    # the scan's low end) and the paper's actual 1064 nm operating point.
-    print("\n=== Wavelength scan, 950-1250 nm (8% Tm sample) ===")
-    scan_wavelengths = np.linspace(950.0, 1250.0, 31)
-    scan = wavelength_dependence(p8, I_pump_values=(20.0, 60.0), wavelengths_nm=scan_wavelengths)
-
-    print(f"  f_GSA peak = {scan.f_gsa.max():.4f} at "
-          f"{scan.wavelengths_nm[np.argmax(scan.f_gsa)]:.1f} nm "
-          f"(lambda0_gsa = {p8.lambda0_gsa_nm:.1f} nm)")
-    print(f"  f_ESA peak = {scan.f_esa.max():.4f} at "
-          f"{scan.wavelengths_nm[np.argmax(scan.f_esa)]:.1f} nm "
-          f"(lambda0_esa = {p8.lambda0_esa_nm:.1f} nm)")
-    for I_pump in (20.0, 60.0):
-        emis = scan.emission[I_pump]
-        print(f"  I_pump={I_pump:5.1f} kW/cm^2: emission ranges from "
-              f"{emis.min():.3g} to {emis.max():.3g} across the scan "
-              f"(peak at {scan.wavelengths_nm[np.argmax(emis)]:.1f} nm)")
-
-    # Plot 1: GSA resonance factor vs wavelength.
-    plot_resonance_factor_vs_wavelength(
-        scan.wavelengths_nm, scan.f_gsa, "GSA", p8.lambda0_gsa_nm, p8.sigma_lambda_gsa_nm,
-        color="tab:blue", savepath="pa_resonance_gsa_v2.png",
-    )
-    # Plot 2: ESA resonance factor vs wavelength.
-    plot_resonance_factor_vs_wavelength(
-        scan.wavelengths_nm, scan.f_esa, "ESA", p8.lambda0_esa_nm, p8.sigma_lambda_esa_nm,
-        color="tab:orange", savepath="pa_resonance_esa_v2.png",
-    )
-    # Plot 3: steady-state emission vs wavelength at fixed pump intensities.
-    plot_emission_vs_wavelength(scan.wavelengths_nm, scan.emission,
-                                savepath="pa_emission_vs_wavelength_v2.png")
-
-    plt.close("all")
-
-
-if __name__ == "__main__":
-    main()

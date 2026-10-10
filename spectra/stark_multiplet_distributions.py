@@ -22,6 +22,7 @@ Het script toont het plot non-blocking (Spyder) en slaat de figuur op als PDF.
 
 from __future__ import annotations
 
+from pathlib import Path
 import os  # Toegevoegd voor het aanmaken van mappen en bestandspaden
 from typing import Optional
 
@@ -373,7 +374,7 @@ def main() -> None:
 
     # Specificeer de map en bestandsnaam.
     # (r"..." voorkomt dat Python de \ als ontsnappingsteken ziet)
-    save_dir = r"C:\Users\ruben\Documents\BONZ\Script_afbeeldingen"
+    save_dir = str(Path(__file__).resolve().parent / "results")
     save_path = os.path.join(save_dir, "Gaussian_Stark_functies.pdf")
 
     # Zorg dat de map bestaat voordat we opslaan

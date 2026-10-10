@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_1_fig2a.py
+figure2a_power_dependence.py
 =====================
 
 Figure 2a-style plot:

@@ -21,10 +21,10 @@ ESA blijft het oorspronkelijke elektronische model zonder zijbanden.
 Normalisatie op 1064 nm bepaalt geen absolute GSA/ESA-verhouding.
 
 Gebruik:
-  python gsa_esa_fononzijbanden.py --no-show
-  python gsa_esa_fononzijbanden.py --data-only
-  python gsa_esa_fononzijbanden.py --temperature 350 --coupling-h5 0.08
-  python gsa_esa_fononzijbanden.py --coupling-f4 0 --data-only
+  python gsa_esa_phonon_factors_legacy.py --no-show
+  python gsa_esa_phonon_factors_legacy.py --data-only
+  python gsa_esa_phonon_factors_legacy.py --temperature 350 --coupling-h5 0.08
+  python gsa_esa_phonon_factors_legacy.py --coupling-f4 0 --data-only
 
 Benodigd: numpy; voor PNG/SVG-grafieken ook matplotlib.
 CSV, instellingen/diagnostiek (JSON) en grafieken komen naast dit script,
@@ -447,12 +447,10 @@ def plot_factors(wavelengths, f_gsa, f_esa, basename, show=True):
                  fontsize=9, color="#526171")
         fig.savefig(str(basename) + ".png", dpi=200, facecolor="white")
         fig.savefig(str(basename) + ".svg", facecolor="white")
-        
-        # Display all figures together.
-        # block=False prevents Spyder from remaining busy until the plot windows
-        # are manually closed.
-        plt.show(block=False)
-        plt.pause(0.1)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
 
 
 def main():

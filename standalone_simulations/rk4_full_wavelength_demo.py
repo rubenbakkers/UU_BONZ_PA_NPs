@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-photon_avalanche_rk4_corrected_v2.py
+rk4_full_gaussian_demo_v2.py
 =====================================
 
 DRE/RK4 model for the Tm3+-doped NaYF4 photon-avalanche nanoparticles

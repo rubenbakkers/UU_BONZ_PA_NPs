@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_5_wavelength_detuning.py
+wavelength_detuning_gaussian_cauchy.py
 ====================================
 
 Genereert de golflengte-detuning-demonstratieplot (800-nm emissie vs.
 pompintensiteit, 1 curve per pompgolflengte, voor het 8% Tm-sample) uit het
-oorspronkelijke script "photon_avalanche_rk4_corrected_v2.py". Fysica/model
+oorspronkelijke script "rk4_full_gaussian_demo_v2.py". Fysica/model
 komt uit pa_model.py (ongewijzigd overgenomen: DRE's, RK4-integrator en
 threshold-berekening blijven exact hetzelfde).
 

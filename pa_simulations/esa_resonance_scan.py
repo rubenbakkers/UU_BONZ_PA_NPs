@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_7_resonance_esa.py
+esa_resonance_scan.py
 ==============================
 
 Genereert alleen de ESA-resonantieprofiel-plot (resonantiefactor f(lambda)
 vs. pompgolflengte, voor de ESA-overgang van het 8% Tm-sample) uit het
-oorspronkelijke script "photon_avalanche_rk4_corrected_v2.py". Fysica/model
+oorspronkelijke script "rk4_full_gaussian_demo_v2.py". Fysica/model
 komt uit pa_model.py (ongewijzigd overgenomen).
 
 Output: pa_resonance_esa_v2.png

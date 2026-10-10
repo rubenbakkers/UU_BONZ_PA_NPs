@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_1_fig2a.py
+figure2a_power_dependence.py
 =====================
 
 Genereert de Figure-2a-stijl plot (800-nm emissie vs. pompintensiteit

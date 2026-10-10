@@ -18,9 +18,9 @@ Alle zero-Lorentz-profielen worden als exacte Gaussian stickconvolutie
 berekend. Er wordt geen numerieke vloer bij de spectra opgeteld.
 
 Gebruik:
-    python gsa_esa_900_2000nm.py
-    python gsa_esa_900_2000nm.py --data-only
-    python gsa_esa_900_2000nm.py --no-show --output-dir "mijn map"
+    python gsa_esa_electronic_factors.py
+    python gsa_esa_electronic_factors.py --data-only
+    python gsa_esa_electronic_factors.py --no-show --output-dir "mijn map"
 
 Benodigd: numpy; voor de grafiek ook matplotlib.
 Uitvoer: CSV plus PNG/SVG naast dit script, tenzij --output-dir is opgegeven.

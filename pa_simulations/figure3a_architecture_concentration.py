@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_3_fig3a.py
+figure3a_architecture_concentration.py
 ======================
 
 Genereert alleen de Figure-3a-stijl plot (800-nm emissie vs. pompintensiteit,
 boven: effect van core/shell architectuur bij 8% Tm; onder: effect van
 Tm3+-concentratie) uit het oorspronkelijke script
-"photon_avalanche_rk4_corrected_v2.py". Fysica/model komt uit pa_model.py
+"rk4_full_gaussian_demo_v2.py". Fysica/model komt uit pa_model.py
 (ongewijzigd overgenomen).
 
 Dit is 1 figuur (1 .png) met 2 subplots -- net als in het origineel.

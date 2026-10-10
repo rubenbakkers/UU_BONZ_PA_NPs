@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_4_fig3b.py
+figure3b_threshold_relaxation.py
 ======================
 
 Genereert alleen de Figure-3b-stijl plot (PA-drempelintensiteit vs. W2) uit
-het oorspronkelijke script "photon_avalanche_rk4_corrected_v2.py".
+het oorspronkelijke script "rk4_full_gaussian_demo_v2.py".
 Fysica/model komt uit pa_model.py (ongewijzigd overgenomen).
 
 Let op: dit is de rekenkundig zwaarste plot van het origineel (dichte W2- en

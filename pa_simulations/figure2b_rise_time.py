@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_2_fig2b_risetime.py
+figure2b_rise_time.py
 ===============================
 
 Genereert alleen de Figure-2b-stijl plot (800-nm stijgtijd vs. pompintensiteit
 voor het 8% Tm-sample) uit het oorspronkelijke script
-"photon_avalanche_rk4_corrected_v2.py". Fysica/model komt uit pa_model.py
+"rk4_full_gaussian_demo_v2.py". Fysica/model komt uit pa_model.py
 (ongewijzigd overgenomen).
 
 Output: pa_fig2b_rise_time_v2.png

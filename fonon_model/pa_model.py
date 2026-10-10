@@ -7,7 +7,7 @@ Gedeelde natuurkunde-/modelcode voor het DRE/RK4-model van Tm3+-gedoteerde
 NaYF4 photon-avalanche nanodeeltjes (Lee et al., Nature 589, 230-235 (2021)).
 
 Dit bestand bevat alle logica uit secties 1 t/m 7b van het oorspronkelijke
-script "photon_avalanche_rk4_corrected_v2.py" (fysische constanten,
+script "rk4_full_gaussian_demo_v2.py" (fysische constanten,
 modelparameters, de DRE's, de RK4-integrator, steady-state/emissie-functies,
 drempel-/stijgtijdbepaling, en de golflengte-scan).
 Correctie: de GSA-overgang 3H6 -> 3H5 ligt ONDER de fotonenergie bij

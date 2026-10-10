@@ -1,3 +1,5 @@
+> **Historische toelichting:** deze tekst beschrijft een andere, DRE-gebaseerde implementatie die niet in deze repository staat. De actuele `passi_phenomenological_simulation.py` gebruikt een fenomenologische sigmoid, heeft geen CLI en leest `Fig4_data.npz` niet. De hieronder beschreven opties, exports en validatieresultaten gelden daarom niet voor het actuele script. Zie [README.md](README.md).
+
 # Fig4.py - lokale DRE-respons met uitsluitend gepubliceerde parameters
 
 Deze versie vervangt de vorige `recomputed`-berekening. De interpolatie van

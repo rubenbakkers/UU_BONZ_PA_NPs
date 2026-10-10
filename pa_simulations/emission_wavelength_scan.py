@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-pa_script_8_emission_vs_wavelength.py
+emission_wavelength_scan.py
 =======================================
 
 Genereert alleen de plot van steady-state 800-nm emissie vs. pompgolflengte
 (bij vaste pompintensiteiten 20 en 60 kW/cm^2, voor het 8% Tm-sample) uit het
-oorspronkelijke script "photon_avalanche_rk4_corrected_v2.py". Fysica/model
+oorspronkelijke script "rk4_full_gaussian_demo_v2.py". Fysica/model
 komt uit pa_model.py (ongewijzigd overgenomen).
 
 Output: pa_emission_vs_wavelength_v2.png
