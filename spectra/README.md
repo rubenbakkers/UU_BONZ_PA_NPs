@@ -1,11 +1,14 @@
 # Starkniveaus en GSA/ESA-spectra
 
-Deze map bevat vijf zelfstandige scripts voor de energieniveaus en relatieve absorptie van Tm³⁺ in NaYF₄. Ze gebruiken ingebouwde Starkenergieniveaus en berekenen geen photon-avalanche-populatiedynamiek. Voor de koppeling aan emissie, drempels en stijgtijden zie [pa_simulations](../pa_simulations/README.md) en het [model met een fononband](../fonon_model/README.md).
+Nieuw: [gsa_esa_fononband.py](gsa_esa_fononband.py) gebruikt een continue fononband voor GSA én ESA, met standaard het bij benadering overgenomen Yb/Tm Raman-profiel en 46 knopen. Zie [RAMAN_PROFILE.md](RAMAN_PROFILE.md) voor bron, aannamen, profielplot en gebruik.
+
+Deze map bevat zes zelfstandige scripts voor de energieniveaus en relatieve absorptie van Tm³⁺ in NaYF₄. Ze gebruiken ingebouwde Starkenergieniveaus en berekenen geen photon-avalanche-populatiedynamiek. Voor de koppeling aan emissie, drempels en stijgtijden zie [pa_simulations](../pa_simulations/README.md) en het [model met een fononband](../fonon_model/README.md).
 
 ## Welk script gebruik je?
 
 | Script | Wat berekent het? | Nuttig voor |
 |---|---|---|
+| [gsa_esa_fononband.py](gsa_esa_fononband.py) | Continue fononband voor GSA én ESA, standaard met overgenomen Yb/Tm Raman-profiel | Multipeak-profiel, modegewichten en absorptiefactoren bekijken |
 | [stark_multiplet_distributions.py](stark_multiplet_distributions.py) | Gaussiaanse verdelingen rond de Starkniveaus van zes multiplets | Niveauposities en de invloed van Boltzmannweging bekijken |
 | [stark_transition_spectra.py](stark_transition_spectra.py) | Verschillen tussen begin- en eindniveaus, verbrede overgangsbanden en energetische kandidaten rond een pompgolflengte | Van losse niveaus naar mogelijke absorptieovergangen gaan |
 | [gsa_esa_electronic_factors.py](gsa_esa_electronic_factors.py) | GSA/ESA-factoren met elektronische lijnverbreding, zonder achtergrond | De relatieve absorptie over 900–2000 nm bekijken zonder kinetieksimulatie |
@@ -22,7 +25,7 @@ Voer de voorbeelden uit vanuit de hoofdmap van de repository. Gebruik Python 3.1
 python -m pip install numpy matplotlib
 ```
 
-De drie factorscripts kunnen met alleen NumPy CSV-gegevens berekenen via `--data-only`. De scripts voor niveauverdelingen en overgangsspectra gebruiken Matplotlib voor hun figuren. Geen van deze vijf scripts importeert de kinetische module `pa_model.py`.
+De vier factorscripts kunnen met alleen NumPy CSV-gegevens berekenen via `--data-only`. De scripts voor niveauverdelingen en overgangsspectra gebruiken Matplotlib voor hun figuren. Geen van deze zes scripts importeert de kinetische module `pa_model.py`.
 
 ### 1. Verdelingen van de Starkniveaus
 
