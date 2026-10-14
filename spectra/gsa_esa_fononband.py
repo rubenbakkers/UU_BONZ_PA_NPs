@@ -96,6 +96,7 @@ BAND_MEAN_CM1 = 320.0    # Gewogen gemiddelde, Yb/Tm-monster (304 voor Yb/Er).
 BAND_SIGMA_CM1 = 45.0    # Alleen gebruikt bij optioneel Gaussian-profiel.
 BAND_PROFILE = "raman_tm"  # "raman_tm", "gaussian", "uniform" of "file"
 # Approximate manual trace of the dotted Yb/Tm Raman curve, panel A.
+# Right tail refined using the visible dot centers in the supplied image.
 # Source: Wilhelm et al. (2013), https://doi.org/10.7150/thno.5113, Fig. 3A.
 # Wavenumber (cm^-1), relative Raman intensity; not an experimental DOS table.
 RAMAN_TM_PROFILE_POINTS = np.array([
@@ -134,22 +135,27 @@ RAMAN_TM_PROFILE_POINTS = np.array([
     (360.0, 0.790),
     (365.0, 0.800),
     (370.0, 0.730),
-    (375.0, 0.630),
-    (380.0, 0.520),
-    (385.0, 0.450),
-    (390.0, 0.400),
-    (395.0, 0.380),
-    (400.0, 0.360),
-    (405.0, 0.340),
-    (410.0, 0.330),
-    (415.0, 0.340),
-    (420.0, 0.350),
-    (425.0, 0.350),
-    (430.0, 0.310),
-    (435.0, 0.260),
-    (440.0, 0.180),
-    (445.0, 0.120),
-    (450.0, 0.100),
+    (373.99, 0.6724),
+    (375.35, 0.6273),
+    (378.89, 0.5871),
+    (381.08, 0.5414),
+    (383.57, 0.5000),
+    (385.95, 0.4607),
+    (390.37, 0.4258),
+    (393.90, 0.3858),
+    (398.13, 0.3690),
+    (402.74, 0.3385),
+    (408.24, 0.3602),
+    (413.75, 0.3759),
+    (418.86, 0.3534),
+    (422.61, 0.3121),
+    (425.20, 0.2672),
+    (430.12, 0.2274),
+    (433.16, 0.1828),
+    (437.19, 0.1442),
+    (442.50, 0.1280),
+    (448.06, 0.1189),
+    (450.00, 0.1160),
 ], dtype=float)
 
 DISCRETE_ENERGIES_CM1 = (250.0, 305.0, 365.0)
