@@ -1,5 +1,7 @@
 # GSA/ESA met het overgenomen Yb/Tm Raman-profiel
 
+De rechterstaart vanaf ongeveer 374 cm⁻¹ is verfijnd naar de zichtbare centra van de grijze puntjes in de aangeleverde afbeelding. Dit omvat het kleine maximum rond 414 cm⁻¹, de kruising rond 425 cm⁻¹ en de sterkere afname daarna. De afgelezen punten kunnen ongelijk verdeeld zijn; de kernel blijft ze bemonsteren op het rooster van 5 cm⁻¹.
+
 `gsa_esa_fononband.py` is de aangepaste versie van het door de gebruiker aangeleverde continue-band-script. Het standaardprofiel is geen Gaussian: het volgt bij benadering de **gestippelde NaYF₄(Yb/Tm)-curve in paneel A van Fig. 3** van Wilhelm et al. (2013), [doi:10.7150/thno.5113](https://doi.org/10.7150/thno.5113). Paneel B bevat ligandtrillingen en wordt niet gebruikt.
 
 De punten zijn handmatig bij benadering afgelezen uit de aangeleverde afbeelding. Het betreft **Raman-intensiteit als DOS-/koppelingsproxy**, geen gemeten fonon-toestandsdichtheid en geen oorspronkelijke numerieke meetdata. `data/raman_ybtm_fig3a_approx.csv` bevat de reproduceerbare invoerpunten. Het zelfstandige script bevat dezelfde tabel zodat het ook zonder bijkomende bestanden werkt. Met `--band-file` kan een nauwkeuriger gedigitaliseerde of gecorrigeerde DOS worden geladen.
