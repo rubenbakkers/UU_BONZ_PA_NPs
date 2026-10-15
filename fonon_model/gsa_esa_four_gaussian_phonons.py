@@ -3,6 +3,7 @@
 
 No sums/differences of multiple phonons and no normalization at 1064 nm.
 Each complete GSA/ESA spectrum is normalized to its own global maximum.
+Plots show these factors directly, without equalizing local peak heights.
 The electronic Stark levels/weights follow the supplied electronic script.
 All electronic widths are 8.5 cm^-1; the effective H5 width of 300 cm^-1
 is replaced by explicit single-phonon sidebands, not applied a second time.
@@ -17,6 +18,7 @@ Usage (NumPy; Matplotlib only for plots):
     python gsa_esa_four_gaussian_phonons.py --coupling 0 --data-only
     python gsa_esa_four_gaussian_phonons.py --phonon-bands 1 3 --no-show
     python gsa_esa_four_gaussian_phonons.py --no-phonons --no-show
+    python gsa_esa_four_gaussian_phonons.py --log-y --no-show
     python gsa_esa_four_gaussian_phonons.py --plot-normalization global --no-show
     python gsa_esa_four_gaussian_phonons.py --output-dir results/four_gaussians
 """
@@ -213,53 +215,10 @@ def export_profile(output_dir, enabled_bands=None):
     return grid, components, total
 
 
-def peak_display_scale(values):
-    """Display scale with visible peaks at one and preserved valley flanks.
-
-    This ONLY changes plot coordinates, not model factors or CSV data.
-    Between neighboring peaks, map each flank in log intensity onto a
-    shared valley y_valley/sqrt(y_peak_left*y_peak_right). Constant peak
-    division preserves the outer tails. No plotted values are clipped.
-    Compute log(scale) directly to
-    avoid dividing by an underflowed display value in very deep valleys.
-    """
-    y = np.asarray(values, dtype=float)
-    if y.ndim != 1 or not np.all(np.isfinite(y)) or np.any(y < 0):
-        raise ValueError("Display normalization needs finite nonnegative 1D values.")
-    if not np.any(y > 0):
-        return np.ones_like(y)
-    tiny = np.finfo(float).tiny
-    threshold = max(tiny, PLOT_MIN_FACTOR * y.max())
-    indices = np.flatnonzero((y[1:-1] > y[:-2]) & (y[1:-1] >= y[2:])) + 1
-    if y.size > 1:
-        if y[0] >= y[1] and y[0] > threshold:
-            indices = np.r_[0, indices]
-        if y[-1] >= y[-2] and y[-1] > threshold:
-            indices = np.r_[indices, y.size - 1]
-    indices = indices[y[indices] > threshold]
-    if not indices.size:
-        return np.full_like(y, y.max())
-    logs = np.log(np.maximum(y, tiny))
-    log_scale = np.full_like(y, logs[indices[0]])
-    log_scale[indices[-1]:] = logs[indices[-1]]
-    for left, right in zip(indices[:-1], indices[1:]):
-        valley = left + int(np.argmin(y[left:right + 1]))
-        shared_scale = 0.5 * (logs[left] + logs[right])
-        for peak, flank in ((left, np.arange(left, valley + 1)),
-                            (right, np.arange(valley, right + 1))):
-            depth = logs[peak] - logs[valley]
-            if depth > 0:
-                fraction = (logs[peak] - logs[flank]) / depth
-            else:
-                # Equal-height plateaus, including logarithmic round-off.
-                fraction = np.zeros(flank.size)
-            log_scale[flank] = logs[peak] + fraction * (shared_scale - logs[peak])
-    scale = np.exp(log_scale)
-    scale[indices] = y[indices]  # Make sampled peak heights exactly one.
-    return scale
-
-
-def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="peaks"):
+def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="global", log_y=False):
+    """Plot the model factors directly, with one constant scale per spectrum."""
+    if normalization != "global":
+        raise ValueError("Only global normalization is supported; local peak equalization was removed.")
     import matplotlib.pyplot as plt
 
     with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
@@ -269,24 +228,19 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="peak
         for spectrum, color, label in ((gsa, "#ba4a18", "GSA"), (esa, "#1468b1", "ESA")):
             full = spectrum.factor(wavelengths)
             zero = spectrum.factor(wavelengths, zero_only=True)
-            if normalization == "peaks":
-                scale = peak_display_scale(full)
-                full = full / scale
-                zero = zero / scale
-            ax.plot(wavelengths, np.where(full > 0, full, np.nan), color=color, label=label)
-            ax.plot(wavelengths, np.where(zero > 0, zero, np.nan), color=color,
+            full_plot = np.where(full > 0, full, np.nan) if log_y else full
+            zero_plot = np.where(zero > 0, zero, np.nan) if log_y else zero
+            ax.plot(wavelengths, full_plot, color=color, label=label)
+            ax.plot(wavelengths, zero_plot, color=color,
                     linestyle="--", alpha=0.65, label=f"{label}, zonder fononevent")
-        ylabel = ("Piekgenormaliseerde weergave" if normalization == "peaks"
-                  else "Relatieve absorptiefactor f")
-        ax.set(xlabel="Pompgolflengte (nm)", ylabel=ylabel,
-               xlim=(wavelengths[0], wavelengths[-1]), ylim=(PLOT_MIN_FACTOR, 1.4), yscale="log")
+        ax.set(xlabel="Pompgolflengte (nm)", ylabel="Relatieve absorptiefactor f",
+               xlim=(wavelengths[0], wavelengths[-1]),
+               ylim=(PLOT_MIN_FACTOR if log_y else 0.0, 1.15),
+               yscale="log" if log_y else "linear")
         ax.axvline(1064, color="#7d858c", linestyle=":", linewidth=1, label="1064 nm (alleen markering)")
         ax.grid(alpha=0.2)
         ax.legend(fontsize=9, ncol=2)
-        if normalization == "peaks":
-            fig.text(0.5, 0.012, "Zichtbare pieken op 1 geschaald; CSV bevat de berekende f-factoren.",
-                     ha="center", fontsize=9, color="#526171")
-        fig.tight_layout(rect=(0, 0.035 if normalization == "peaks" else 0, 1, 1))
+        fig.tight_layout()
         for suffix in ("png", "svg"):
             fig.savefig(output_dir / f"f_gsa_f_esa_four_gaussian_single_phonon.{suffix}", dpi=180)
 
@@ -319,8 +273,9 @@ def main():
     switches.add_argument("--no-phonons", action="store_true", help="Disable all four phonon bands.")
     switches.add_argument("--phonon-bands", type=int, nargs="+", choices=(1, 2, 3, 4),
                           help="Enable only these bands, for example: --phonon-bands 1 3")
-    parser.add_argument("--plot-normalization", choices=("peaks", "global"), default="peaks",
-                        help="Plot with visible peaks at 1 (default), or show original global-normalized factors.")
+    parser.add_argument("--plot-normalization", choices=("global",), default="global",
+                        help="Show the model factors directly (default); no local peak equalization.")
+    parser.add_argument("--log-y", action="store_true", help="Use a logarithmic spectrum axis; default is linear.")
     parser.add_argument("--data-only", action="store_true", help="CSV/JSON only; no Matplotlib needed.")
     parser.add_argument("--no-show", action="store_true", help="Save plots without opening a window.")
     parser.add_argument("--output-dir", type=Path, default=Path(__file__).resolve().parent / "results" / "four_gaussians")
@@ -350,6 +305,7 @@ def main():
         "phonon_bands_enabled": enabled.tolist(),
         "active_phonon_bands": (np.flatnonzero(enabled) + 1).tolist(),
         "plot_normalization": args.plot_normalization,
+        "plot_y_scale": "log" if args.log_y else "linear",
         "phonon_centers_cm1": PHONON_CENTERS_CM1.tolist(),
         "phonon_sigmas_cm1": PHONON_SIGMAS_CM1.tolist(),
         "phonon_peak_heights": PHONON_PEAK_HEIGHTS.tolist(),
@@ -371,7 +327,8 @@ def main():
     print(f"Results: {args.output_dir.resolve()}")
     print(f"Active phonon bands: {(np.flatnonzero(enabled) + 1).tolist()}")
     if not args.data_only:
-        figures = plot_results(args.output_dir, wavelengths, gsa, esa, profile, args.plot_normalization)
+        figures = plot_results(args.output_dir, wavelengths, gsa, esa, profile,
+                               args.plot_normalization, log_y=args.log_y)
         import matplotlib.pyplot as plt
         if args.no_show:
             for figure in figures:

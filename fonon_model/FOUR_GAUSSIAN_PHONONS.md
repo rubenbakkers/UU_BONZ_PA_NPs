@@ -8,7 +8,9 @@ Dit is een genormaliseerd fenomenologisch eersteordemodel. De fononparameters il
 
 De vier fononbanden kunnen afzonderlijk aan of uit. Standaard staan ze allemaal aan. Met `--phonon-bands 1 3` worden alleen banden 1 en 3 gebruikt; `--no-phonons` schakelt alle vier uit. De elektronische overgangen blijven in beide gevallen aanwezig.
 
-De bestaande GSA/ESA-figuur toont standaard de zichtbare lokale pieken op hoogte één. Dat is een aanvullende bewerking van alleen de grafische weergave. De berekende f-factoren, lijngewichten, fononkansen en CSV-gegevens behouden hun hieronder beschreven modelnormalisatie. Met `--plot-normalization global` toont dezelfde figuur de berekende f-factoren rechtstreeks.
+De GSA/ESA-figuur toont de berekende f-factoren rechtstreeks. Er is geen aanvullende herschaling van lokale pieken. Iedere volledige curve gebruikt één constante globale normalisatiefactor, zodat relatieve piekhoogten, flanken en dalen hun berekende vorm behouden.
+
+De verticale as is standaard lineair. Daardoor zijn de hoogteverschillen tussen naburige Starkpieken zichtbaar; een logaritmische as over twintig ordes kan die verschillen optisch samendrukken tot een bijna vlakke bovenrand. Met `--log-y` blijft de logaritmische weergave beschikbaar om zwakke staarten te bekijken. Beide askeuzes gebruiken precies dezelfde berekende waarden.
 
 ## De figuur en de vier banden
 
@@ -148,25 +150,15 @@ waar λ in nm staat. Er is geen normalisatie op 1064 nm; de waarden daar volgen 
 
 De horizontale as wordt alleen van golfgetal naar golflengte omgerekend. De f-factor is de waarde van een doorsnede bij die golflengte, geen kansdichtheid per nm; daarom wordt geen Jacobiaan toegevoegd. Gaussianstaarten worden niet fysisch afgeknipt. Extreem kleine staartwaarden kunnen in drijvendekommagetallen wel nul worden. De ondergrens van de logaritmische plot verandert de geëxporteerde gegevens niet.
 
-## Pieken op één in dezelfde spectrafiguur
+## Rechtstreekse weergave van de modelwaarden
 
-De standaardoptie `--plot-normalization peaks` zet de gedetecteerde lokale maxima van iedere volledige GSA- en ESA-curve op hoogte één. Dit gebeurt na de berekening en uitsluitend voor de getekende coördinaten. Er wordt geen extra GSA/ESA-figuur gemaakt: dezelfde spectrafiguur en dezelfde PNG/SVG-bestandsnamen worden gebruikt.
+De spectrafiguur tekent de berekende f-factoren rechtstreeks. Er wordt geen schaal meer door lokale maxima en dalen gelegd en individuele pieken worden niet naar dezelfde hoogte getrokken. Alleen de vaste modelnormalisatie blijft bestaan: het volledige GSA-spectrum en het volledige ESA-spectrum hebben elk hun eigen globale maximum van ongeveer één.
 
-Voor GSA en ESA afzonderlijk worden de lokale maxima boven de relatieve plotondergrens in de bemonsterde golflengtescan gevonden. Numerieke schommelingen bij vrijwel nul tellen niet mee. Tussen twee naburige maxima zoekt het script het dal. Iedere dalende en stijgende flank krijgt een lineaire transformatie van de logaritmische intensiteit. De maxima eindigen op één en beide flanken ontmoeten elkaar op de gedeelde dalhoogte f_dal / sqrt(f_links f_rechts). Buiten de eerste en laatste gevonden piek gebruikt het script een constante deling door de betreffende randpiek. De weergegeven volledige curve is
+Hierdoor blijven de berekende relatieve piekhoogten, flanken en dalen behouden. Ook zwakke fononzijbanden behouden hun berekende sterkte. Overlappende lijnen kunnen nog natuurlijke brede schouders vormen, maar de grafiek voegt geen kunstmatige bovenrand of plateau toe. Nulwaarden worden uitsluitend voor de logaritmische as verborgen; de CSV blijft ongewijzigd.
 
-$$
-y_{\mathrm{plot}}(\lambda)=\frac{f(\lambda)}{E(\lambda)}.
-$$
+De stippellijnen tonen de gewogen bijdrage zonder fononevent met dezelfde constante normalisatiefactor als de volledige curve. Wanneer alle fononbanden uitstaan, vallen beide curves samen.
 
-Hierin is E de positieve schaal die uit de flanktransformatie volgt. Op ieder gevonden maximum geldt E(λ) = f(λ), zodat die piek op één staat. Er wordt niets op één afgeknipt: de flanken blijven dalen en stijgen en krijgen geen kunstmatige vlakke bovenkant. Als een niet-nulcurve geen lokaal maximum binnen de scan heeft, wordt voor de weergave haar hoogste bemonsterde waarde gebruikt; een volledig nulcurve blijft nul.
-
-Ook zwakke lokale maxima die door de fononbijdragen ontstaan, krijgen zo hoogte één. Dit zijn maxima van het samengestelde spectrum. Afzonderlijke Stark-overgangen die door overlap geen apart maximum vormen, worden niet los gedetecteerd of los op één gezet. Het resultaat hangt mede af van het getoonde scanbereik en de bemonstering.
-
-De bijdrage zonder fononevent wordt met **dezelfde schaal van de volledige curve** gedeeld. Zij krijgt geen eigen normalisatie of afkapping. Omdat deze bijdrage nergens groter is dan de volledige berekende curve, blijft dat ook na dezelfde positieve deling gelden. Als alle fononbanden uitstaan, vallen beide curves samen.
-
-Deze weergave maakt de piekstructuur zichtbaar, maar verwijdert informatie over de relatieve hoogtes van verschillende maxima. Omdat E(λ) over de golflengte varieert, veranderen ook dalhoogtes en schijnbare breedtes. De piekgenormaliseerde curve is daarom geen nieuwe absorptiedoorsnede, kansverdeling of gekalibreerde f-factor. Haar oppervlakte en hoogtes zijn niet geschikt om lijnsterktes of koppelingen te vergelijken. De y-as heet daarom *Piekgenormaliseerde weergave* en de figuur vermeldt dat de CSV de berekende f-factoren bevat.
-
-Gebruik `--plot-normalization global` voor een kwantitatieve vergelijking van relatieve hoogtes en vormen binnen het berekende GSA- of ESA-spectrum, of gebruik de CSV. In die stand worden f(λ) en de gewogen bijdrage zonder fononevent rechtstreeks weergegeven op de modelnormalisatie met één globaal maximum per volledig spectrum. Die modelnormalisatie blijft GSA en ESA elk afzonderlijk schalen en levert dus nog steeds geen absolute GSA/ESA-verhouding.
+`--plot-normalization global` is de standaard en blijft voor bestaande opdrachten beschikbaar. De vroegere optie `peaks` is verwijderd. De JSON vermeldt `plot_normalization: "global"` en `plot_y_scale: "linear"` (of `"log"` met `--log-y`).
 
 ## Uitvoeren en vergelijken
 
@@ -177,27 +169,28 @@ python fonon_model/gsa_esa_four_gaussian_phonons.py --coupling 0.05 --temperatur
 python fonon_model/gsa_esa_four_gaussian_phonons.py --no-phonons --temperature 300 --no-show --output-dir fonon_model/results/four_gaussian_no_phonon
 python fonon_model/gsa_esa_four_gaussian_phonons.py --phonon-bands 1 3 --coupling 0.05 --temperature 300 --no-show --output-dir fonon_model/results/four_gaussian_bands_1_3
 python fonon_model/gsa_esa_four_gaussian_phonons.py --plot-normalization global --coupling 0.05 --temperature 300 --no-show --output-dir fonon_model/results/four_gaussian_global
+python fonon_model/gsa_esa_four_gaussian_phonons.py --log-y --no-show --output-dir fonon_model/results/four_gaussian_log
 python fonon_model/gsa_esa_four_gaussian_phonons.py --coupling 0.05 --temperature 300 --data-only --output-dir fonon_model/results/four_gaussian_data
 ```
 
 `--no-show` slaat de grafieken op zonder een venster te openen. `--data-only` maakt alleen tabellen en instellingen. Zonder `--output-dir` wordt `fonon_model/results/four_gaussians` gebruikt.
 
-`--plot-normalization peaks` is de standaard voor de bestaande spectrafiguur; `--plot-normalization global` kiest de berekende f-factoren als verticale coördinaten. Beide opties leveren dezelfde CSV-waarden en modelkansen op bij gelijke overige instellingen. De gekozen weergavestand staat in het instellingenbestand. Wie dezelfde uitvoermap opnieuw gebruikt, overschrijft de vorige uitvoerbestanden met de nieuwe uitvoering.
+De standaardfiguur toont de berekende f-factoren zonder extra herschaling per lokale piek. Dezelfde waarden staan in de CSV. De JSON vermeldt de globale weergavestand. Wie dezelfde uitvoermap opnieuw gebruikt, overschrijft de vorige uitvoerbestanden met de nieuwe uitvoering.
 
 De bandnummers 1 tot en met 4 staan in de parametertabel. `--phonon-bands 1 3` betekent dat uitsluitend die twee banden aanstaan; de overige staan uit. `--no-phonons` en `--phonon-bands` kunnen niet in dezelfde opdracht worden gebruikt. Zonder beide opties volgt het script de lijst `PHONON_BANDS_ENABLED` bovenin het bestand. Bijvoorbeeld `[True, False, True, False]` maakt banden 1 en 3 de standaardselectie; `[False, False, False, False]` maakt alle banden standaard inactief. Een expliciete opdrachtregeloptie overschrijft die lijst voor de betreffende uitvoering. `--coupling 0` schakelt de fononbijdragen eveneens uit, ongeacht de bandselectie.
 
 De uitvoer bestaat uit:
 
 - `f_gsa_f_esa_four_gaussian_single_phonon.csv`: berekende f-factoren met de modelnormalisatie, onafhankelijk van de gekozen grafische weergavestand.
-- `f_gsa_f_esa_four_gaussian_single_phonon.png` en `.svg`: dezelfde GSA/ESA-figuur in de gekozen weergavestand `peaks` of `global`.
+- `f_gsa_f_esa_four_gaussian_single_phonon.png` en `.svg`: de GSA/ESA-figuur met de berekende f-factoren.
 - `phonon_profile_four_gaussians.csv`, `.png` en `.svg`: de vier gekozen fononbanden en hun som.
 - `four_gaussian_single_phonon_settings.json`: gebruikte parameters en normalisatie-instellingen.
 
-In de spectrafiguur geven de stippellijnen alleen de gewogen bijdrage zonder fononevent weer. Zij delen de modelnormalisatie van het volledige spectrum en, bij `peaks`, ook de aanvullende grafische envelop. Ze zijn niet afzonderlijk op hun eigen maximum gezet en ook niet identiek aan een nieuwe berekening met `--coupling 0`. Wanneer alle fononbanden uitstaan, vallen de volledige curve en de bijdrage zonder fononevent samen.
+In de spectrafiguur geven de stippellijnen alleen de gewogen bijdrage zonder fononevent weer. Zij delen de constante modelnormalisatie van het volledige spectrum. Ze zijn niet afzonderlijk op hun eigen maximum gezet en ook niet identiek aan een nieuwe berekening met `--coupling 0`. Wanneer alle fononbanden uitstaan, vallen de volledige curve en de bijdrage zonder fononevent samen.
 
 De profielafbeelding toont ingeschakelde banden en de som van alleen die actieve banden. Uitgeschakelde banden worden voor de herkenbaarheid grijs gestippeld getoond en tellen niet mee in de som. Alle profielcurves worden gedeeld door het maximum van het volledige oorspronkelijke vierbandprofiel, ook als sommige banden uitstaan. Het verlies van een band blijft daardoor zichtbaar als verlies van profielhoogte; de actieve som wordt niet opnieuw naar één geschaald. Wanneer alle banden uitstaan, is die actieve som overal nul; dit wordt zonder deling door nul weergegeven. De profiel-CSV bewaart alle vier oorspronkelijke componenten in de kolommen `gaussian_1` tot en met `gaussian_4`; de kolom `sum` bevat uitsluitend hun actieve som en kan dus afwijken van de som van die vier referentiekolommen. De actieve selectie staat in het instellingenbestand.
 
-Deze grafische herschaling van het profiel verandert de vaste oppervlaktegewichten wₖ niet. Het profiel toont de geselecteerde vorm onafhankelijk van `--coupling`: bij `--coupling 0` kunnen daarom wel geselecteerde profielbanden zichtbaar zijn terwijl hun bijdrage aan het absorptiespectrum nul is. `--plot-normalization` beïnvloedt alleen de GSA/ESA-figuur en verandert de profielafbeelding niet.
+Deze grafische herschaling van het profiel verandert de vaste oppervlaktegewichten wₖ niet. Het profiel toont de geselecteerde vorm onafhankelijk van `--coupling`: bij `--coupling 0` kunnen daarom wel geselecteerde profielbanden zichtbaar zijn terwijl hun bijdrage aan het absorptiespectrum nul is. De GSA/ESA-weergave en de profielweergave gebruiken elk hun hierboven beschreven vaste normalisatie.
 
 De vergelijking tussen `--no-phonons` en de standaardberekening is binnen ditzelfde model. Alle banden uit geeft exact dezelfde spectra als `--coupling 0`, bij dezelfde overige instellingen. Beide gebruiken σ_el = 8.5 cm⁻¹ voor alle elektronische lijnen. De nul-koppelingversie reproduceert daarom niet de eerdere elektronische variant met σ = 300 cm⁻¹ voor ³H₆ → ³H₅. Dat onderscheid is nodig om een verandering door expliciete fononen niet te verwarren met een verandering van de elektronische lijnbreedte.
 
