@@ -15,6 +15,9 @@ See FOUR_GAUSSIAN_PHONONS.md for the full theory and limitations.
 Usage (NumPy; Matplotlib only for plots):
     python gsa_esa_four_gaussian_phonons.py --no-show
     python gsa_esa_four_gaussian_phonons.py --coupling 0 --data-only
+    python gsa_esa_four_gaussian_phonons.py --phonon-bands 1 3 --no-show
+    python gsa_esa_four_gaussian_phonons.py --no-phonons --no-show
+    python gsa_esa_four_gaussian_phonons.py --plot-normalization global --no-show
     python gsa_esa_four_gaussian_phonons.py --output-dir results/four_gaussians
 """
 
@@ -31,6 +34,7 @@ import numpy as np
 PHONON_CENTERS_CM1 = np.array([253.0, 306.0, 364.0, 408.0])
 PHONON_SIGMAS_CM1 = np.array([14.0, 24.0, 15.0, 24.0])
 PHONON_PEAK_HEIGHTS = np.array([0.68, 0.95, 0.66, 0.36])
+PHONON_BANDS_ENABLED = np.array([True, True, True, True])
 TEMPERATURE_K = 300.0
 ELECTRONIC_SIGMA_CM1 = 8.5
 DEFAULT_COUPLING = 0.05
@@ -80,7 +84,16 @@ def phonon_area_weights():
     return areas / areas.sum()
 
 
-def single_phonon_probabilities(coupling, temperature_k):
+def band_mask(enabled_bands=None):
+    """Four on/off switches; disabling a band never reallocates its coupling."""
+    enabled = PHONON_BANDS_ENABLED if enabled_bands is None else enabled_bands
+    values = np.asarray(enabled)
+    if values.shape != (4,) or not np.all(np.isin(values, [False, True])):
+        raise ValueError("Supply four boolean phonon-band switches.")
+    return values.astype(bool, copy=True)
+
+
+def single_phonon_probabilities(coupling, temperature_k, enabled_bands=None):
     """Return P0, P(create one mode k), P(consume one mode k).
 
     This is a normalized first-order model, NOT a multiphonon Poisson
@@ -91,7 +104,7 @@ def single_phonon_probabilities(coupling, temperature_k):
         raise ValueError("Coupling must be finite and nonnegative.")
     if not np.isfinite(temperature_k) or temperature_k < 0:
         raise ValueError("Temperature must be finite and nonnegative.")
-    weights = phonon_area_weights()
+    weights = phonon_area_weights() * band_mask(enabled_bands)
     if temperature_k == 0:
         occupation = np.zeros(4)
     else:
@@ -135,8 +148,10 @@ class SinglePhononSpectrum:
     There are no sidebands at sums/differences of phonon energies.
     """
 
-    def __init__(self, channels, coupling=DEFAULT_COUPLING, temperature_k=TEMPERATURE_K):
-        single_phonon_probabilities(coupling, temperature_k)  # Validate even if all channels are off.
+    def __init__(self, channels, coupling=DEFAULT_COUPLING, temperature_k=TEMPERATURE_K,
+                 enabled_bands=None):
+        self.enabled_bands = band_mask(enabled_bands)
+        single_phonon_probabilities(coupling, temperature_k, self.enabled_bands)
         self.components = []
         self.channel_probabilities = {}
         channel_weights = np.array([w for _, _, w in channels.values()], dtype=float)
@@ -145,7 +160,8 @@ class SinglePhononSpectrum:
             raise ValueError("Channel weights must be finite, nonnegative and nonzero in total.")
         for name, (lower, upper, weight) in channels.items():
             multiplier = CHANNEL_COUPLING_MULTIPLIERS[name]
-            p0, plus, minus = single_phonon_probabilities(coupling * multiplier, temperature_k)
+            p0, plus, minus = single_phonon_probabilities(
+                coupling * multiplier, temperature_k, self.enabled_bands)
             self.channel_probabilities[name] = {
                 "zero_phonon": p0, "create_one": plus.tolist(), "consume_one": minus.tolist()}
             if weight == 0:
@@ -185,18 +201,65 @@ class SinglePhononSpectrum:
         return float(result) if result.ndim == 0 else result
 
 
-def export_profile(output_dir):
+def export_profile(output_dir, enabled_bands=None):
     grid = np.linspace(150, 500, 1401)
     components = PHONON_PEAK_HEIGHTS * np.exp(
         -0.5*((grid[:, None] - PHONON_CENTERS_CM1)/PHONON_SIGMAS_CM1)**2)
-    total = components.sum(axis=1)
+    # Keep all four component columns; the sum column contains active bands only.
+    total = (components * band_mask(enabled_bands)).sum(axis=1)
     data = np.column_stack((grid, components, total))
     np.savetxt(output_dir / "phonon_profile_four_gaussians.csv", data, delimiter=",",
                header="wavenumber_cm1,gaussian_1,gaussian_2,gaussian_3,gaussian_4,sum", comments="", fmt="%.12g")
     return grid, components, total
 
 
-def plot_results(output_dir, wavelengths, gsa, esa, profile):
+def peak_display_scale(values):
+    """Display scale with visible peaks at one and preserved valley flanks.
+
+    This ONLY changes plot coordinates, not model factors or CSV data.
+    Between neighboring peaks, map each flank in log intensity onto a
+    shared valley y_valley/sqrt(y_peak_left*y_peak_right). Constant peak
+    division preserves the outer tails. No plotted values are clipped.
+    Compute log(scale) directly to
+    avoid dividing by an underflowed display value in very deep valleys.
+    """
+    y = np.asarray(values, dtype=float)
+    if y.ndim != 1 or not np.all(np.isfinite(y)) or np.any(y < 0):
+        raise ValueError("Display normalization needs finite nonnegative 1D values.")
+    if not np.any(y > 0):
+        return np.ones_like(y)
+    tiny = np.finfo(float).tiny
+    threshold = max(tiny, PLOT_MIN_FACTOR * y.max())
+    indices = np.flatnonzero((y[1:-1] > y[:-2]) & (y[1:-1] >= y[2:])) + 1
+    if y.size > 1:
+        if y[0] >= y[1] and y[0] > threshold:
+            indices = np.r_[0, indices]
+        if y[-1] >= y[-2] and y[-1] > threshold:
+            indices = np.r_[indices, y.size - 1]
+    indices = indices[y[indices] > threshold]
+    if not indices.size:
+        return np.full_like(y, y.max())
+    logs = np.log(np.maximum(y, tiny))
+    log_scale = np.full_like(y, logs[indices[0]])
+    log_scale[indices[-1]:] = logs[indices[-1]]
+    for left, right in zip(indices[:-1], indices[1:]):
+        valley = left + int(np.argmin(y[left:right + 1]))
+        shared_scale = 0.5 * (logs[left] + logs[right])
+        for peak, flank in ((left, np.arange(left, valley + 1)),
+                            (right, np.arange(valley, right + 1))):
+            depth = logs[peak] - logs[valley]
+            if depth > 0:
+                fraction = (logs[peak] - logs[flank]) / depth
+            else:
+                # Equal-height plateaus, including logarithmic round-off.
+                fraction = np.zeros(flank.size)
+            log_scale[flank] = logs[peak] + fraction * (shared_scale - logs[peak])
+    scale = np.exp(log_scale)
+    scale[indices] = y[indices]  # Make sampled peak heights exactly one.
+    return scale
+
+
+def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="peaks"):
     import matplotlib.pyplot as plt
 
     with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
@@ -206,25 +269,38 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile):
         for spectrum, color, label in ((gsa, "#ba4a18", "GSA"), (esa, "#1468b1", "ESA")):
             full = spectrum.factor(wavelengths)
             zero = spectrum.factor(wavelengths, zero_only=True)
+            if normalization == "peaks":
+                scale = peak_display_scale(full)
+                full = full / scale
+                zero = zero / scale
             ax.plot(wavelengths, np.where(full > 0, full, np.nan), color=color, label=label)
             ax.plot(wavelengths, np.where(zero > 0, zero, np.nan), color=color,
                     linestyle="--", alpha=0.65, label=f"{label}, zonder fononevent")
-        ax.set(xlabel="Pompgolflengte (nm)", ylabel="Relatieve absorptiefactor f",
+        ylabel = ("Piekgenormaliseerde weergave" if normalization == "peaks"
+                  else "Relatieve absorptiefactor f")
+        ax.set(xlabel="Pompgolflengte (nm)", ylabel=ylabel,
                xlim=(wavelengths[0], wavelengths[-1]), ylim=(PLOT_MIN_FACTOR, 1.4), yscale="log")
         ax.axvline(1064, color="#7d858c", linestyle=":", linewidth=1, label="1064 nm (alleen markering)")
         ax.grid(alpha=0.2)
         ax.legend(fontsize=9, ncol=2)
-        fig.tight_layout()
+        if normalization == "peaks":
+            fig.text(0.5, 0.012, "Zichtbare pieken op 1 geschaald; CSV bevat de berekende f-factoren.",
+                     ha="center", fontsize=9, color="#526171")
+        fig.tight_layout(rect=(0, 0.035 if normalization == "peaks" else 0, 1, 1))
         for suffix in ("png", "svg"):
             fig.savefig(output_dir / f"f_gsa_f_esa_four_gaussian_single_phonon.{suffix}", dpi=180)
 
         profile_fig, profile_ax = plt.subplots(figsize=(9, 4.8))
         grid, components, total = profile
-        scale = total.max()
+        enabled = gsa.enabled_bands
+        # Scale against the full reference profile, also when every band is off.
+        scale = components.sum(axis=1).max()
         for k in range(4):
-            profile_ax.plot(grid, components[:, k]/scale, linestyle="--",
-                            label=f"Gaussian {k+1}: {PHONON_CENTERS_CM1[k]:g} cm⁻¹")
-        profile_ax.plot(grid, total/scale, color="#303844", linewidth=2, label="Som van vier Gaussians")
+            style = {} if enabled[k] else {"color": "#bfc4c9", "alpha": 0.55}
+            status = "" if enabled[k] else " (uit)"
+            profile_ax.plot(grid, components[:, k]/scale, linestyle="--", **style,
+                            label=f"Gaussian {k+1}: {PHONON_CENTERS_CM1[k]:g} cm⁻¹{status}")
+        profile_ax.plot(grid, total/scale, color="#303844", linewidth=2, label="Som van actieve banden")
         profile_ax.set(xlabel="Ramanverschuiving (cm⁻¹)", ylabel="Relatieve profielintensiteit",
                        xlim=(200, 450), ylim=(0, 1.08))
         profile_ax.legend(fontsize=9)
@@ -239,6 +315,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--coupling", type=float, default=DEFAULT_COUPLING, help="Dimensionless one-phonon strength; 0 disables sidebands.")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE_K, help="Temperature in K, including 0 K.")
+    switches = parser.add_mutually_exclusive_group()
+    switches.add_argument("--no-phonons", action="store_true", help="Disable all four phonon bands.")
+    switches.add_argument("--phonon-bands", type=int, nargs="+", choices=(1, 2, 3, 4),
+                          help="Enable only these bands, for example: --phonon-bands 1 3")
+    parser.add_argument("--plot-normalization", choices=("peaks", "global"), default="peaks",
+                        help="Plot with visible peaks at 1 (default), or show original global-normalized factors.")
     parser.add_argument("--data-only", action="store_true", help="CSV/JSON only; no Matplotlib needed.")
     parser.add_argument("--no-show", action="store_true", help="Save plots without opening a window.")
     parser.add_argument("--output-dir", type=Path, default=Path(__file__).resolve().parent / "results" / "four_gaussians")
@@ -246,8 +328,11 @@ def main():
     if (not np.all(np.isfinite([WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, WAVELENGTH_STEP_NM]))
             or WAVELENGTH_MIN_NM <= 0 or WAVELENGTH_MAX_NM <= WAVELENGTH_MIN_NM or WAVELENGTH_STEP_NM <= 0):
         raise ValueError("Invalid wavelength range or step.")
-    gsa = SinglePhononSpectrum(GSA_CHANNELS, args.coupling, args.temperature)
-    esa = SinglePhononSpectrum(ESA_CHANNELS, args.coupling, args.temperature)
+    enabled = (np.zeros(4, dtype=bool) if args.no_phonons else
+               np.isin(np.arange(1, 5), args.phonon_bands) if args.phonon_bands is not None else
+               band_mask())
+    gsa = SinglePhononSpectrum(GSA_CHANNELS, args.coupling, args.temperature, enabled)
+    esa = SinglePhononSpectrum(ESA_CHANNELS, args.coupling, args.temperature, enabled)
     n = int(np.ceil((WAVELENGTH_MAX_NM-WAVELENGTH_MIN_NM)/WAVELENGTH_STEP_NM)) + 1
     wavelengths = np.linspace(WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, n)
     factors = np.column_stack((wavelengths, gsa.factor(wavelengths), esa.factor(wavelengths)))
@@ -256,12 +341,15 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     np.savetxt(args.output_dir / "f_gsa_f_esa_four_gaussian_single_phonon.csv", factors,
                delimiter=",", header="wavelength_nm,f_gsa,f_esa", comments="", fmt="%.12g")
-    profile = export_profile(args.output_dir)
+    profile = export_profile(args.output_dir, enabled)
     settings = {
         "model": "normalized_zero_or_one_phonon", "maximum_phonons_per_absorption": 1,
         "normalization": "separate_global_GSA_and_ESA_peaks; no 1064 nm anchor",
         "temperature_k": args.temperature, "coupling": args.coupling,
         "channel_coupling_multipliers": CHANNEL_COUPLING_MULTIPLIERS,
+        "phonon_bands_enabled": enabled.tolist(),
+        "active_phonon_bands": (np.flatnonzero(enabled) + 1).tolist(),
+        "plot_normalization": args.plot_normalization,
         "phonon_centers_cm1": PHONON_CENTERS_CM1.tolist(),
         "phonon_sigmas_cm1": PHONON_SIGMAS_CM1.tolist(),
         "phonon_peak_heights": PHONON_PEAK_HEIGHTS.tolist(),
@@ -281,8 +369,9 @@ def main():
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"f_GSA(1064 nm) = {gsa.factor(1064):.8g}; f_ESA(1064 nm) = {esa.factor(1064):.8g}")
     print(f"Results: {args.output_dir.resolve()}")
+    print(f"Active phonon bands: {(np.flatnonzero(enabled) + 1).tolist()}")
     if not args.data_only:
-        figures = plot_results(args.output_dir, wavelengths, gsa, esa, profile)
+        figures = plot_results(args.output_dir, wavelengths, gsa, esa, profile, args.plot_normalization)
         import matplotlib.pyplot as plt
         if args.no_show:
             for figure in figures:
