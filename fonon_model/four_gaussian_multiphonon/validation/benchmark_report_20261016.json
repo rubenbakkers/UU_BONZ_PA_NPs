@@ -1,0 +1,169 @@
+{
+  "description": "Serial single-run timing; global-peak search plus full GSA and ESA scans; no plots or export.",
+  "environment": {
+    "python_version": "3.12.14",
+    "numpy_version": "2.5.3",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel"
+  },
+  "parameters": {
+    "temperature_k": 300.0,
+    "coupling": 0.05,
+    "wavelength_min_nm": 900.0,
+    "wavelength_max_nm": 2000.0,
+    "wavelength_step_nm": 0.05,
+    "wavelength_count": 22001,
+    "phonon_centers_cm1": [
+      253.0,
+      306.0,
+      364.0,
+      408.0
+    ],
+    "phonon_sigmas_cm1": [
+      14.0,
+      24.0,
+      15.0,
+      24.0
+    ],
+    "phonon_peak_heights": [
+      0.68,
+      0.95,
+      0.66,
+      0.36
+    ],
+    "electronic_sigma_cm1": 8.5,
+    "phonon_bands_enabled": [
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "source_sha256": {
+    "original": "fb90babecf078845abb8cc86ea62476d1065e73c8169ff07ed5c7d102a40abf7",
+    "optimized": "47cd7bd30561ead49c5f6abb24ab55ab6ad511de1cef78ae04571e58c77d2eae"
+  },
+  "runs": {
+    "original_four": {
+      "maximum_phonons": 4,
+      "timings": {
+        "construct_gsa_seconds": 19.43872949993238,
+        "construct_esa_seconds": 10.551970500033349,
+        "scan_gsa_seconds": 19.053250400000252,
+        "scan_esa_seconds": 12.225838599959388,
+        "construction_seconds": 29.990699999965727,
+        "scan_seconds": 31.27908899995964,
+        "total_seconds": 61.26978899992537
+      },
+      "gaussian_relative_tolerance": 0.0,
+      "spectra": {
+        "gsa": {
+          "peak_per_cm1": 0.001943332888834295,
+          "factor_at_1064nm": 1.6791430864088483e-05,
+          "unmerged_gaussian_count": 128700,
+          "evaluated_gaussian_count": 128700,
+          "component_groups": 990,
+          "gaussian_count_compression_ratio": 1.0
+        },
+        "esa": {
+          "peak_per_cm1": 0.001835914304553278,
+          "factor_at_1064nm": 0.48761277056997443,
+          "unmerged_gaussian_count": 93555,
+          "evaluated_gaussian_count": 93555,
+          "component_groups": 1485,
+          "gaussian_count_compression_ratio": 1.0
+        }
+      }
+    },
+    "optimized_four": {
+      "maximum_phonons": 4,
+      "timings": {
+        "construct_gsa_seconds": 1.1509802000364289,
+        "construct_esa_seconds": 0.9622374000027776,
+        "scan_gsa_seconds": 1.3775611999444664,
+        "scan_esa_seconds": 1.1260003000497818,
+        "construction_seconds": 2.1132176000392064,
+        "scan_seconds": 2.503561499994248,
+        "total_seconds": 4.616779100033455
+      },
+      "gaussian_relative_tolerance": 1e-14,
+      "spectra": {
+        "gsa": {
+          "peak_per_cm1": 0.001943332888834295,
+          "factor_at_1064nm": 1.679143086408848e-05,
+          "unmerged_gaussian_count": 128700,
+          "evaluated_gaussian_count": 78913,
+          "component_groups": 35,
+          "gaussian_count_compression_ratio": 1.6309099894820878
+        },
+        "esa": {
+          "peak_per_cm1": 0.001835914304553278,
+          "factor_at_1064nm": 0.4876127705699746,
+          "unmerged_gaussian_count": 93555,
+          "evaluated_gaussian_count": 58509,
+          "component_groups": 35,
+          "gaussian_count_compression_ratio": 1.598984771573604
+        }
+      }
+    },
+    "optimized_six": {
+      "maximum_phonons": 6,
+      "timings": {
+        "construct_gsa_seconds": 3.9593770001083612,
+        "construct_esa_seconds": 3.426977999974042,
+        "scan_gsa_seconds": 4.775027900002897,
+        "scan_esa_seconds": 4.186655099969357,
+        "construction_seconds": 7.386355000082403,
+        "scan_seconds": 8.961682999972254,
+        "total_seconds": 16.348038000054657
+      },
+      "gaussian_relative_tolerance": 1e-14,
+      "spectra": {
+        "gsa": {
+          "peak_per_cm1": 0.0019432607860509897,
+          "factor_at_1064nm": 1.679575480668493e-05,
+          "unmerged_gaussian_count": 780780,
+          "evaluated_gaussian_count": 309388,
+          "component_groups": 84,
+          "gaussian_count_compression_ratio": 2.5236272900047836
+        },
+        "esa": {
+          "peak_per_cm1": 0.0018358885855924106,
+          "factor_at_1064nm": 0.4876195923612038,
+          "unmerged_gaussian_count": 567567,
+          "evaluated_gaussian_count": 242419,
+          "component_groups": 84,
+          "gaussian_count_compression_ratio": 2.341264504844917
+        }
+      }
+    }
+  },
+  "comparison_four_phonons": {
+    "rtol": 2e-12,
+    "atol": 4e-323,
+    "passed": true,
+    "spectra": {
+      "gsa": {
+        "allclose": true,
+        "maximum_absolute_factor_difference": 1.7763568394002505e-15,
+        "maximum_relative_factor_difference_for_reference_gt_1e_minus_280": 3.6262419090871136e-15,
+        "relative_comparison_point_count": 22001,
+        "reference_minimum_positive_factor": 2.0175788293041176e-92,
+        "optimized_minimum_positive_factor": 2.017578829304118e-92,
+        "zero_nonzero_disagreement_count": 0
+      },
+      "esa": {
+        "allclose": true,
+        "maximum_absolute_factor_difference": 1.9984014443252818e-15,
+        "maximum_relative_factor_difference_for_reference_gt_1e_minus_280": 3.60346793765941e-15,
+        "relative_comparison_point_count": 22001,
+        "reference_minimum_positive_factor": 7.425151976025353e-16,
+        "optimized_minimum_positive_factor": 7.425151976025352e-16,
+        "zero_nonzero_disagreement_count": 0
+      }
+    }
+  },
+  "measured_total_speedup_four_phonons": 13.271111238456566,
+  "optimized_six_vs_original_four_total_speedup": 3.7478374468985525
+}
+
