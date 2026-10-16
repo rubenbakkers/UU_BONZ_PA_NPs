@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Standalone GSA/ESA spectra with up to 1, 2, 3 or 4 phonons per transition.
+"""Efficient GSA/ESA spectra with up to 1, 2, 3, 4, 5 or 6 phonons per transition.
 
 Sums/differences include repeated and different phonon bands.
-Choose DEFAULT_MAX_PHONONS below or use --max-phonons 1, 2, 3 or 4.
+Choose DEFAULT_MAX_PHONONS below or use --max-phonons 1 through 6.
 The cutoff includes every order from zero to the chosen maximum.
 At maximum 1 the normalized model reproduces the supplied original.
 No normalization at 1064 nm.
@@ -18,7 +18,7 @@ phenomenological coupling proxy, not a measured phonon DOS or coupling.
 See README.md for the full theory and limitations.
 
 Usage (NumPy; Matplotlib only for plots):
-    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 4 --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 6 --no-show
     python gsa_esa_four_gaussian_multiphonon.py --max-phonons 2 --data-only
     python gsa_esa_four_gaussian_multiphonon.py --max-phonons 1 --no-show
     python gsa_esa_four_gaussian_multiphonon.py --phonon-bands 1 3 --no-show
@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from functools import lru_cache
 from itertools import combinations_with_replacement
 from pathlib import Path
 
@@ -45,7 +46,9 @@ PHONON_BANDS_ENABLED = np.array([True, True, True, True])
 TEMPERATURE_K = 300.0
 ELECTRONIC_SIGMA_CM1 = 8.5
 DEFAULT_COUPLING = 0.05
-DEFAULT_MAX_PHONONS = 4  # Choose 1, 2, 3 or 4; includes all lower orders.
+DEFAULT_MAX_PHONONS = 6  # Choose 1 through 6; includes all lower orders.
+GAUSSIAN_RELATIVE_TOLERANCE = 1e-14  # Numerical omission bound; 0 evaluates all float64 tails.
+GAUSSIAN_QUERY_BLOCK_SIZE = 32
 # Relative channel couplings: set any entry to 0 to disable its sidebands.
 CHANNEL_COUPLING_MULTIPLIERS = {
     "3H6 -> 3F4": 1.0, "3H6 -> 3H5": 1.0,
@@ -123,6 +126,13 @@ def phonon_event_means(coupling, temperature_k, enabled_bands=None):
     return plus, minus
 
 
+def validate_max_phonons(max_phonons):
+    if (isinstance(max_phonons, (bool, np.bool_))
+            or not isinstance(max_phonons, (int, np.integer))
+            or max_phonons not in (1, 2, 3, 4, 5, 6)):
+        raise ValueError("Maximum phonons must be an integer from 1 through 6.")
+
+
 def multiphonon_kernel(coupling, temperature_k, enabled_bands=None,
                       max_phonons=DEFAULT_MAX_PHONONS):
     """All count combinations with total created + consumed <= max_phonons.
@@ -132,10 +142,7 @@ def multiphonon_kernel(coupling, temperature_k, enabled_bands=None,
     D_N=sum(mu_total**q/q!, q=0..N). Each unordered count vector occurs once.
     Gaussian variances add even when signed energy shifts cancel.
     """
-    if (isinstance(max_phonons, (bool, np.bool_))
-            or not isinstance(max_phonons, (int, np.integer))
-            or max_phonons not in (1, 2, 3, 4)):
-        raise ValueError("Maximum phonons must be an integer: 1, 2, 3 or 4.")
+    validate_max_phonons(max_phonons)
     plus, minus = phonon_event_means(coupling, temperature_k, enabled_bands)
     means = np.r_[plus, minus]
     try:
@@ -210,16 +217,84 @@ def transition_sticks(lower, upper, temperature_k):
     return gaps.ravel(), strengths.ravel()
 
 
-def gaussian_sum(energy, centers, strengths, sigma):
-    """Exact positive Gaussian sum, with unit area in wavenumber per stick."""
+def validate_sum_tolerance(tolerance):
+    if not np.isfinite(tolerance) or not 0 <= tolerance <= 1e-6:
+        raise ValueError("Gaussian summation tolerance must be finite, between 0 and 1e-6.")
+
+
+def merge_gaussian_components(components):
+    """Merge equal centers only within equal-width, equal no-event groups.
+
+    The input four Gaussian bands and every retained probability are unchanged.
+    np.unique performs exact float comparisons: no energy or width binning.
+    """
+    groups = {}
+    for centers, strengths, sigma, is_zero in components:
+        center_parts, weight_parts = groups.setdefault((sigma, is_zero), ([], []))
+        center_parts.append(centers)
+        weight_parts.append(strengths)
+    merged = []
+    for (sigma, is_zero), (center_parts, weight_parts) in sorted(groups.items()):
+        centers, inverse = np.unique(np.concatenate(center_parts), return_inverse=True)
+        strengths = np.bincount(inverse, weights=np.concatenate(weight_parts), minlength=len(centers))
+        positive = strengths > 0
+        merged.append((centers[positive], strengths[positive], sigma, is_zero))
+    return merged
+
+
+def gaussian_mixture(energy, components, relative_tolerance=GAUSSIAN_RELATIVE_TOLERANCE):
+    """Sorted local Gaussian sums with a positive relative omission bound.
+
+    For each width group and query block, the omitted contribution is bounded
+    by eps/G times the smallest already accumulated result in that block.
+    Positivity bounds additional tolerance-based omissions by eps times the
+    returned result; ordinary float64 rounding and underflow are separate.
+    If the bound is zero, retain all non-underflow Gaussian contributions.
+    """
+    validate_sum_tolerance(relative_tolerance)
     values = np.asarray(energy, dtype=float)
-    result = np.empty(values.size, dtype=float)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Energies must be finite.")
     flat = values.ravel()
-    for start in range(0, flat.size, 512):
-        delta = (flat[start:start + 512, None] - centers) / sigma
-        result[start:start + 512] = np.sum(
-            np.exp(-0.5 * delta**2) * strengths, axis=1) / (np.sqrt(2*np.pi) * sigma)
-    return result.reshape(values.shape)
+    order = np.argsort(flat)
+    sorted_energy = flat[order]
+    result = np.zeros_like(flat)
+    group_count = max(1, len(components))
+    for centers, strengths, sigma, _ in components:
+        if not centers.size:
+            continue
+        amplitudes = strengths / (np.sqrt(2*np.pi)*sigma)
+        amplitude_sum = float(amplitudes.sum())
+        if amplitude_sum == 0:
+            continue
+        log_amplitude_sum = math.log(amplitude_sum)
+        for start in range(0, flat.size, GAUSSIAN_QUERY_BLOCK_SIZE):
+            stop = min(start + GAUSSIAN_QUERY_BLOCK_SIZE, flat.size)
+            queries = sorted_energy[start:stop]
+            if queries[-1] < centers[0]-40*sigma or queries[0] > centers[-1]+40*sigma:
+                continue
+            bound = float(result[start:stop].min()) * (relative_tolerance/group_count)
+            if bound >= amplitude_sum:
+                continue
+            radius = (min(40.0, math.sqrt(max(0.0, 2*(log_amplitude_sum-math.log(bound)))))
+                      if bound > 0 else 40.0)
+            left = np.searchsorted(centers, queries[0]-radius*sigma, side="left")
+            right = np.searchsorted(centers, queries[-1]+radius*sigma, side="right")
+            if left == right:
+                continue
+            with np.errstate(over="ignore"):
+                delta = (queries[:, None]-centers[None, left:right])/sigma
+                result[start:stop] += np.exp(-0.5*delta**2) @ amplitudes[left:right]
+    restored = np.empty_like(result)
+    restored[order] = result
+    return restored.reshape(values.shape)
+
+
+@lru_cache(maxsize=32)
+def _cached_channel_kernel(coupling, temperature_k, enabled_bands, max_phonons,
+                           phonon_centers, phonon_sigmas, phonon_heights):
+    # Include editable band parameters in the cache key to avoid stale kernels.
+    return multiphonon_kernel(coupling, temperature_k, enabled_bands, max_phonons)
 
 
 class MultiPhononSpectrum:
@@ -230,10 +305,15 @@ class MultiPhononSpectrum:
     """
 
     def __init__(self, channels, coupling=DEFAULT_COUPLING, temperature_k=TEMPERATURE_K,
-                 enabled_bands=None, max_phonons=DEFAULT_MAX_PHONONS):
+                 enabled_bands=None, max_phonons=DEFAULT_MAX_PHONONS,
+                 sum_tolerance=GAUSSIAN_RELATIVE_TOLERANCE):
         self.enabled_bands = band_mask(enabled_bands)
-        multiphonon_kernel(coupling, temperature_k, self.enabled_bands, max_phonons)
+        validate_max_phonons(max_phonons)
+        validate_sum_tolerance(sum_tolerance)
+        # Validate independently even when every channel has zero weight.
+        phonon_event_means(coupling, temperature_k, self.enabled_bands)
         self.max_phonons = max_phonons
+        self.sum_tolerance = sum_tolerance
         self.components = []
         self.channel_kernels = {}
         self.channel_probabilities = {}
@@ -243,8 +323,9 @@ class MultiPhononSpectrum:
             raise ValueError("Channel weights must be finite, nonnegative and nonzero in total.")
         for name, (lower, upper, weight) in channels.items():
             multiplier = CHANNEL_COUPLING_MULTIPLIERS[name]
-            kernel, diagnostics = multiphonon_kernel(
-                coupling * multiplier, temperature_k, self.enabled_bands, max_phonons)
+            kernel, diagnostics = _cached_channel_kernel(
+                coupling * multiplier, temperature_k, tuple(self.enabled_bands), max_phonons,
+                tuple(PHONON_CENTERS_CM1), tuple(PHONON_SIGMAS_CM1), tuple(PHONON_PEAK_HEIGHTS))
             self.channel_probabilities[name] = diagnostics
             self.channel_kernels[name] = kernel
             if weight == 0:
@@ -260,23 +341,18 @@ class MultiPhononSpectrum:
         # Fixed energy grid over all lines and sidebands, independent of output scan.
         lo = max(1.0, min(c.min() - 10*s for c, _, s, _ in self.components))
         hi = max(c.max() + 10*s for c, _, s, _ in self.components)
+        self.unmerged_gaussian_count = sum(len(c) for c, _, _, _ in self.components)
+        self.components = merge_gaussian_components(self.components)
+        self.merged_gaussian_count = sum(len(c) for c, _, _, _ in self.components)
+        self.gaussian_width_group_count = len(self.components)
         grid = np.linspace(lo, hi, max(20001, int((hi-lo)/ELECTRONIC_SIGMA_CM1*20)+1))
         self.peak = float(self.raw(grid).max())
         if not np.isfinite(self.peak) or self.peak <= 0:
             raise ValueError("Invalid spectrum maximum.")
 
     def raw(self, energy_cm1, zero_only=False):
-        energy = np.asarray(energy_cm1, dtype=float)
-        if not np.all(np.isfinite(energy)):
-            raise ValueError("Energies must be finite.")
-        result = np.zeros_like(energy)
-        for centers, strengths, sigma, is_zero in self.components:
-            if not zero_only or is_zero:
-                # Beyond 40 sigmas exp(-delta**2/2) underflows to exactly zero
-                # in float64. This skips only arithmetic zeros, not Gaussian tails.
-                mask = (energy >= centers.min()-40*sigma) & (energy <= centers.max()+40*sigma)
-                result[mask] += gaussian_sum(energy[mask], centers, strengths, sigma)
-        return result
+        components = [c for c in self.components if c[3]] if zero_only else self.components
+        return gaussian_mixture(energy_cm1, components, self.sum_tolerance)
 
     def factor(self, wavelengths_nm, zero_only=False):
         wavelengths = np.asarray(wavelengths_nm, dtype=float)
@@ -352,8 +428,10 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="glob
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--max-phonons", type=int, choices=(1, 2, 3, 4), default=DEFAULT_MAX_PHONONS,
+    parser.add_argument("--max-phonons", type=int, choices=(1, 2, 3, 4, 5, 6), default=DEFAULT_MAX_PHONONS,
                         help="Maximum total phonons per transition, including all lower orders (default: %(default)s).")
+    parser.add_argument("--sum-tolerance", type=float, default=GAUSSIAN_RELATIVE_TOLERANCE,
+                        help="Relative numerical Gaussian-sum omission bound (default: %(default)s); 0 disables adaptive omission.")
     parser.add_argument("--coupling", type=float, default=DEFAULT_COUPLING, help="Dimensionless coupling strength; 0 disables sidebands.")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE_K, help="Temperature in K, including 0 K.")
     switches = parser.add_mutually_exclusive_group()
@@ -376,8 +454,10 @@ def main():
                band_mask())
     if args.output_dir is None:
         args.output_dir = Path(__file__).resolve().parent / "results" / f"max_{args.max_phonons}_phonons"
-    gsa = MultiPhononSpectrum(GSA_CHANNELS, args.coupling, args.temperature, enabled, args.max_phonons)
-    esa = MultiPhononSpectrum(ESA_CHANNELS, args.coupling, args.temperature, enabled, args.max_phonons)
+    gsa = MultiPhononSpectrum(GSA_CHANNELS, args.coupling, args.temperature, enabled,
+                            args.max_phonons, args.sum_tolerance)
+    esa = MultiPhononSpectrum(ESA_CHANNELS, args.coupling, args.temperature, enabled,
+                            args.max_phonons, args.sum_tolerance)
     n = int(np.ceil((WAVELENGTH_MAX_NM-WAVELENGTH_MIN_NM)/WAVELENGTH_STEP_NM)) + 1
     wavelengths = np.linspace(WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, n)
     factors = np.column_stack((wavelengths, gsa.factor(wavelengths), esa.factor(wavelengths)))
@@ -391,6 +471,14 @@ def main():
         "model": "conditional_truncated_independent_Poisson_Gaussian_bands",
         "maximum_phonons_per_absorption": args.max_phonons,
         "cutoff_counts": "total created plus consumed phonons; includes orders 0 through maximum",
+        "gaussian_sum_relative_omission_bound": args.sum_tolerance,
+        "gaussian_sum_rounding_note": "Bound on additional tolerance-based omissions; ordinary float64 rounding and underflow are separate. No floor, FFT or interpolation.",
+        "gaussian_evaluation": "merge exact centers at equal width; sorted local positive sums with relative omission bound",
+        "gaussian_compression": {
+            label: {"before_merging": spectrum.unmerged_gaussian_count,
+                    "after_merging": spectrum.merged_gaussian_count,
+                    "width_groups": spectrum.gaussian_width_group_count}
+            for label, spectrum in (("gsa", gsa), ("esa", esa))},
         "normalization": "separate_global_GSA_and_ESA_peaks; no 1064 nm anchor",
         "temperature_k": args.temperature, "coupling": args.coupling,
         "channel_coupling_multipliers": CHANNEL_COUPLING_MULTIPLIERS,
@@ -414,7 +502,8 @@ def main():
                         "Independent phonon events, including repeated-band sums and signed differences.",
                         "All retained orders are normalized together; omitted Poisson mass is reported.",
                         "Gaussian phonon variances add for independently sampled events, even at zero net shift.",
-                        "Full Gaussian tails retained; no artificial absorption floor."],
+                        "Gaussian bands unchanged; adaptive arithmetic omissions have a relative bound, with no artificial absorption floor.",
+                        "Use --sum-tolerance 0 to evaluate every non-underflow Gaussian contribution."],
     }
     (args.output_dir / "four_gaussian_multiphonon_settings.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
