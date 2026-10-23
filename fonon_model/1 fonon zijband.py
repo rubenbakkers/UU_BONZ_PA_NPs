@@ -1,15 +1,25 @@
 # -*- coding: utf-8 -*-
-"""Efficient GSA/ESA spectra with up to 1, 2, 3, 4, 5 or 6 phonons per transition.
+"""Efficient GSA/ESA spectra with up to N phonons per transition (any N >= 1).
 
 Sums/differences include repeated and different phonon bands.
-Choose DEFAULT_MAX_PHONONS below or use --max-phonons 1 through 6.
+Choose DEFAULT_MAX_PHONONS below or use --max-phonons N (any integer >= 1; default below).
+The cost grows quickly with N: see the estimate printed at the start of a run.
 The cutoff includes every order from zero to the chosen maximum.
 Each spectrum is normalized so that f(1064 nm) = 1 for both GSA and ESA
 (see NORMALIZATION_WAVELENGTH_NM).
 Plots show these factors directly, without equalizing local peak heights.
-The electronic Stark levels/weights follow the supplied electronic script.
+The electronic Stark levels follow the supplied electronic script.
 All electronic widths are 8.5 cm^-1; the effective H5 width of 300 cm^-1
 is replaced by explicit phonon sidebands, not applied a second time.
+
+CHANNEL WEIGHTS (new): the relative strength of each electronic channel is no
+longer 1.0 but follows from Judd-Ofelt theory, with Omega_t (Table S4) and the
+reduced matrix elements [U(t)]^2 (Table S5) of the Supplementary Information of
+Lee et al., Nature 589, 230 (2021):
+    S = sum_t Omega_t [U(t)]^2,   weight = S * nu_bar   (nu_bar: multiplet barycentre gap)
+The SI gives no matrix elements for 3F4 -> 3F3 and 3F4 -> 3F2; these two are taken from
+the original source, Carnall et al. 1978 (ANL-78-XX-95), Appendix XIII Table 2 (Tm3+:LaF3).
+A PLACEHOLDER (line strength of 3F4 -> 3H4) is only used for a channel that has no entry.
 
 The four Gaussian components approximate the dotted Yb/Tm Raman curve in
 Wilhelm et al., Fig. 3A: https://doi.org/10.7150/thno.5113 . They are a
@@ -17,12 +27,13 @@ phenomenological coupling proxy, not a measured phonon DOS or coupling.
 See README.md for the full theory and limitations.
 
 Usage (NumPy; Matplotlib only for plots):
-    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 6 --no-show
-    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 2 --data-only
-    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 1 --no-show
-    python gsa_esa_four_gaussian_multiphonon.py --phonon-bands 1 3 --no-show
-    python gsa_esa_four_gaussian_multiphonon.py --no-phonons --no-show
-    python gsa_esa_four_gaussian_multiphonon.py --log-y --no-show
+    python "1 fonon zijband.py" --max-phonons 6 --no-show
+    python "1 fonon zijband.py" --max-phonons 10 --no-show
+    python "1 fonon zijband.py" --max-phonons 2 --data-only
+    python "1 fonon zijband.py" --max-phonons 1 --no-show
+    python "1 fonon zijband.py" --phonon-bands 1 3 --no-show
+    python "1 fonon zijband.py" --no-phonons --no-show
+    python "1 fonon zijband.py" --log-y --no-show
 """
 
 from __future__ import annotations
@@ -30,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import warnings
 from functools import lru_cache
 from itertools import combinations_with_replacement
 from pathlib import Path
@@ -45,7 +57,9 @@ PHONON_BANDS_ENABLED = np.array([True, True, True, True])
 TEMPERATURE_K = 300.0
 ELECTRONIC_SIGMA_CM1 = 8.5
 DEFAULT_COUPLING = 0.05
-DEFAULT_MAX_PHONONS = 6  # Choose 1 through 6; includes all lower orders.
+DEFAULT_MAX_PHONONS = 6  # Any integer >= 1; includes all lower orders.
+COMBINATION_WARNING_THRESHOLD = 100_000  # Warn when the phonon-combination count exceeds this.
+JSON_COMBINATION_LIMIT = 5000  # Per channel: write all combinations to the JSON only up to this count.
 NORMALIZATION_WAVELENGTH_NM = 1064.0  # f_GSA = f_ESA = 1 at this wavelength.
 GAUSSIAN_RELATIVE_TOLERANCE = 1e-14  # Numerical omission bound; 0 evaluates all float64 tails.
 GAUSSIAN_QUERY_BLOCK_SIZE = 32
@@ -65,15 +79,65 @@ E_3H5_CM1 = np.array([8207, 8218, 8267, 8288, 8317, 8348, 8377, 8428, 8440, 8528
 E_3H4_CM1 = np.array([12546, 12566, 12588, 12613, 12642, 12673, 12721, 12766, 12776], dtype=float)
 E_3F3_CM1 = np.array([14279, 14317, 14341, 14361, 14380, 14398, 14420], dtype=float)
 E_3F2_CM1 = np.array([14936, 14951, 15018, 15061, 15084], dtype=float)
-GSA_CHANNELS = {
-    "3H6 -> 3F4": (E_3H6_CM1, E_3F4_CM1, 1.0),
-    "3H6 -> 3H5": (E_3H6_CM1, E_3H5_CM1, 1.0),
+
+# ---------------------------------------------------------------------------
+# Judd-Ofelt channel weights (Lee et al. 2021, Supplementary Information)
+# ---------------------------------------------------------------------------
+JO_OMEGA_1E20_CM2 = np.array([2.37, 3.05, 0.41])  # Omega_2, Omega_4, Omega_6 (SI Table S4)
+# [U(2)]^2, [U(4)]^2, [U(6)]^2 (SI Table S5; Carnall et al. 1978, Tm3+ in LaF3)
+JO_REDUCED_MATRIX_ELEMENTS = {
+    "3H6 -> 3F4": (0.5395, 0.7261, 0.2421),
+    "3H6 -> 3H5": (0.1074, 0.2314, 0.6385),
+    "3F4 -> 3H4": (0.1275, 0.1311, 0.2113),
+    # Not in the SI; from Carnall et al. 1978 (ANL-78-XX-95), Appendix XIII Table 2, Tm3+:LaF3
+    # (same source as SI Table S5; the rows 3F3 -> 3F4 and 3F2 -> 3F4, read in the other direction):
+    "3F4 -> 3F3": (0.0025, 0.0005, 0.1688),
+    "3F4 -> 3F2": (0.3026, 0.0562, 0.0440),
 }
-ESA_CHANNELS = {
-    "3F4 -> 3H4": (E_3F4_CM1, E_3H4_CM1, 1.0),
-    "3F4 -> 3F3": (E_3F4_CM1, E_3F3_CM1, 1.0),
-    "3F4 -> 3F2": (E_3F4_CM1, E_3F2_CM1, 1.0),
-}
+# Fill in yourself (same format), e.g. from Carnall et al. 1978:
+USER_REDUCED_MATRIX_ELEMENTS: dict = {}
+# Or give a line strength S directly in 1e-20 cm^2 (takes precedence over everything):
+USER_LINE_STRENGTH_OVERRIDE: dict = {}
+JO_PLACEHOLDER_REFERENCE = "3F4 -> 3H4"  # used for channels without matrix elements
+JO_USE_FREQUENCY_FACTOR = True  # weight = S * nu_bar (sigma_int ~ nu * S); False: weight = S
+
+
+def line_strength(name):
+    """Return (S in 1e-20 cm^2, is_placeholder)."""
+    if name in USER_LINE_STRENGTH_OVERRIDE:
+        return float(USER_LINE_STRENGTH_OVERRIDE[name]), False
+    table = {**JO_REDUCED_MATRIX_ELEMENTS, **USER_REDUCED_MATRIX_ELEMENTS}
+    if name in table:
+        return float(JO_OMEGA_1E20_CM2 @ np.asarray(table[name], dtype=float)), False
+    warnings.warn(
+        f"No matrix elements for '{name}' in the SI; PLACEHOLDER = line strength of "
+        f"'{JO_PLACEHOLDER_REFERENCE}'. Fill in USER_REDUCED_MATRIX_ELEMENTS.",
+        stacklevel=2)
+    return float(JO_OMEGA_1E20_CM2 @ np.asarray(table[JO_PLACEHOLDER_REFERENCE], dtype=float)), True
+
+
+def channel_weight(name, lower, upper):
+    """Relative channel weight (arbitrary scale; normalized per spectrum later)."""
+    strength, _ = line_strength(name)
+    if JO_USE_FREQUENCY_FACTOR:
+        strength *= float(np.mean(upper) - np.mean(lower))
+    return strength
+
+
+def build_channels(spec):
+    return {name: (lower, upper, channel_weight(name, lower, upper))
+            for name, (lower, upper) in spec.items()}
+
+
+GSA_CHANNELS = build_channels({
+    "3H6 -> 3F4": (E_3H6_CM1, E_3F4_CM1),
+    "3H6 -> 3H5": (E_3H6_CM1, E_3H5_CM1),
+})
+ESA_CHANNELS = build_channels({
+    "3F4 -> 3H4": (E_3F4_CM1, E_3H4_CM1),
+    "3F4 -> 3F3": (E_3F4_CM1, E_3F3_CM1),
+    "3F4 -> 3F2": (E_3F4_CM1, E_3F2_CM1),
+})
 
 
 def validate_phonons():
@@ -131,8 +195,21 @@ def phonon_event_means(coupling, temperature_k, enabled_bands=None):
 def validate_max_phonons(max_phonons):
     if (isinstance(max_phonons, (bool, np.bool_))
             or not isinstance(max_phonons, (int, np.integer))
-            or max_phonons not in (1, 2, 3, 4, 5, 6)):
-        raise ValueError("Maximum phonons must be an integer from 1 through 6.")
+            or max_phonons < 1):
+        raise ValueError("Maximum phonons must be an integer of at least 1.")
+
+
+def estimate_cost(max_phonons, enabled_bands, temperature_k, coupling):
+    """Number of count combinations per channel and of Gaussian width groups.
+
+    combinations = C(k+N, N) with k active event types (creation + consumption per band);
+    width groups  = C(b+N, N) with b enabled bands (variance depends only on per-band totals).
+    """
+    bands = int(np.count_nonzero(enabled_bands))
+    if coupling <= 0 or bands == 0:
+        return 1, 1
+    k = bands * (2 if temperature_k > 0 else 1)
+    return math.comb(k + max_phonons, max_phonons), math.comb(bands + max_phonons, max_phonons)
 
 
 def multiphonon_kernel(coupling, temperature_k, enabled_bands=None,
@@ -432,10 +509,27 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="glob
         return fig, profile_fig
 
 
+def channel_weight_report():
+    """Judd-Ofelt line strengths and (un-normalized) weights per channel, for the JSON/log."""
+    report = {}
+    for spectrum_name, channels in (("gsa", GSA_CHANNELS), ("esa", ESA_CHANNELS)):
+        total = sum(w for _, _, w in channels.values())
+        for name, (_, _, weight) in channels.items():
+            strength, placeholder = line_strength(name)
+            report[name] = {"spectrum": spectrum_name,
+                            "line_strength_1e-20_cm2": strength,
+                            "weight": weight,
+                            "share_in_spectrum": weight / total,
+                            "placeholder": placeholder}
+    return report
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--max-phonons", type=int, choices=(1, 2, 3, 4, 5, 6), default=DEFAULT_MAX_PHONONS,
-                        help="Maximum total phonons per transition, including all lower orders (default: %(default)s).")
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--max-phonons", type=int, default=DEFAULT_MAX_PHONONS, metavar="N",
+                        help="Maximum total phonons per transition, any integer >= 1, "
+                             "including all lower orders (default: %(default)s).")
     parser.add_argument("--sum-tolerance", type=float, default=GAUSSIAN_RELATIVE_TOLERANCE,
                         help="Relative numerical Gaussian-sum omission bound (default: %(default)s); 0 disables adaptive omission.")
     parser.add_argument("--coupling", type=float, default=DEFAULT_COUPLING, help="Dimensionless coupling strength; 0 disables sidebands.")
@@ -452,6 +546,8 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Output directory; default: results/max_N_phonons beside this script.")
     args = parser.parse_args()
+    if args.max_phonons < 1:
+        parser.error("--max-phonons must be at least 1.")
     if (not np.all(np.isfinite([WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, WAVELENGTH_STEP_NM]))
             or WAVELENGTH_MIN_NM <= 0 or WAVELENGTH_MAX_NM <= WAVELENGTH_MIN_NM or WAVELENGTH_STEP_NM <= 0):
         raise ValueError("Invalid wavelength range or step.")
@@ -460,6 +556,11 @@ def main():
                band_mask())
     if args.output_dir is None:
         args.output_dir = Path(__file__).resolve().parent / "results" / f"max_{args.max_phonons}_phonons"
+    combinations, width_groups = estimate_cost(args.max_phonons, enabled, args.temperature, args.coupling)
+    print(f"Estimate: {combinations:,} phonon combinations per channel, up to {width_groups:,} Gaussian width groups.")
+    if combinations > COMBINATION_WARNING_THRESHOLD:
+        warnings.warn(f"{combinations:,} combinations per channel: this run can take a long time and a lot of memory. "
+                      "Consider a lower --max-phonons.", stacklevel=1)
     gsa = MultiPhononSpectrum(GSA_CHANNELS, args.coupling, args.temperature, enabled,
                             args.max_phonons, args.sum_tolerance)
     esa = MultiPhononSpectrum(ESA_CHANNELS, args.coupling, args.temperature, enabled,
@@ -473,6 +574,7 @@ def main():
     np.savetxt(args.output_dir / "f_gsa_f_esa_four_gaussian_multiphonon.csv", factors,
                delimiter=",", header="wavelength_nm,f_gsa,f_esa", comments="", fmt="%.12g")
     profile = export_profile(args.output_dir, enabled)
+    weight_report = channel_weight_report()
     settings = {
         "model": "conditional_truncated_independent_Poisson_Gaussian_bands",
         "maximum_phonons_per_absorption": args.max_phonons,
@@ -489,6 +591,10 @@ def main():
         "normalization_wavelength_nm": NORMALIZATION_WAVELENGTH_NM,
         "temperature_k": args.temperature, "coupling": args.coupling,
         "channel_coupling_multipliers": CHANNEL_COUPLING_MULTIPLIERS,
+        "channel_weights_judd_ofelt": weight_report,
+        "judd_ofelt_omega_1e-20_cm2": JO_OMEGA_1E20_CM2.tolist(),
+        "judd_ofelt_use_frequency_factor": JO_USE_FREQUENCY_FACTOR,
+        "judd_ofelt_source": "Lee et al., Nature 589, 230 (2021), Supplementary Tables S4 and S5",
         "phonon_bands_enabled": enabled.tolist(),
         "active_phonon_bands": (np.flatnonzero(enabled) + 1).tolist(),
         "plot_normalization": args.plot_normalization,
@@ -499,7 +605,10 @@ def main():
         "phonon_area_weights": phonon_area_weights().tolist(),
         "electronic_sigma_cm1": ELECTRONIC_SIGMA_CM1,
         "channel_probabilities": gsa.channel_probabilities | esa.channel_probabilities,
-        "channel_combinations": gsa.channel_kernels | esa.channel_kernels,
+        "channel_combinations": {
+            name: (kernel if len(kernel) <= JSON_COMBINATION_LIMIT else
+                   f"omitted: {len(kernel)} combinations (> JSON_COMBINATION_LIMIT = {JSON_COMBINATION_LIMIT})")
+            for name, kernel in (gsa.channel_kernels | esa.channel_kernels).items()},
         "reference_raw_per_cm1_at_normalization_wavelength": {"gsa": gsa.reference, "esa": esa.reference},
         "factors_at_normalization_wavelength": {
             "gsa": gsa.factor(NORMALIZATION_WAVELENGTH_NM),
@@ -512,7 +621,8 @@ def main():
                         "All retained orders are normalized together; omitted Poisson mass is reported.",
                         "Gaussian phonon variances add for independently sampled events, even at zero net shift.",
                         "Gaussian bands unchanged; adaptive arithmetic omissions have a relative bound, with no artificial absorption floor.",
-                        "Use --sum-tolerance 0 to evaluate every non-underflow Gaussian contribution."],
+                        "Use --sum-tolerance 0 to evaluate every non-underflow Gaussian contribution.",
+                        "Channel weights from Judd-Ofelt: Omega_t from SI Table S4; [U(t)]^2 from SI Table S5 and Carnall et al. 1978 (Appendix XIII Table 2, Tm3+:LaF3)."],
     }
     (args.output_dir / "four_gaussian_multiphonon_settings.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -521,6 +631,10 @@ def main():
     print(f"Results: {args.output_dir.resolve()}")
     print(f"Active phonon bands: {(np.flatnonzero(enabled) + 1).tolist()}")
     print(f"Maximum phonons per transition: {args.max_phonons} (all lower orders included)")
+    for name, info in weight_report.items():
+        flag = "  [PLACEHOLDER]" if info["placeholder"] else ""
+        print(f"{name}: S = {info['line_strength_1e-20_cm2']:.4f} e-20 cm2, "
+              f"share in {info['spectrum'].upper()} = {info['share_in_spectrum']:.3f}{flag}")
     for name, diagnostics in settings["channel_probabilities"].items():
         print(f"{name}: order probabilities = {diagnostics['order_probabilities']}; "
               f"omitted Poisson mass = {diagnostics['poisson_omitted_probability']:.4g}")
