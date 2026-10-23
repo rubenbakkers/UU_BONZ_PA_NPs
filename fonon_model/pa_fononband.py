@@ -42,6 +42,8 @@ Gebruik (met dit script in dezelfde map als je bestaande pa_model.py):
     python pa_fononband.py --spectra-only --coupling-h5 0.08
     python pa_fononband.py --data-only --phonon-model discrete
     python pa_fononband.py --spectra-only --band-file eigen_band.csv
+    python pa_fononband.py --no-show --plots spectra ith          # alleen deze
+    python pa_fononband.py --no-show --skip-plots sigma rise      # alles behalve deze
 
 Benodigd: numpy; voor grafieken matplotlib; voor snelle kinetiek scipy;
 voor de populatiesimulaties de bestaande pa_model.py. De standaard
@@ -131,6 +133,28 @@ N_POLISH = 40
 # Longer wavelengths lack independent absorption calibration in this model.
 # Keep all transitions in the spectra, but opt in explicitly to extrapolation.
 INCLUDE_EXTRAPOLATED_WAVELENGTHS = False
+
+# ---------------------------------------------------------------------------
+# Welke onderdelen/plots een volledige run maakt (True = aan, False = uit).
+# Op de commandoregel overschrijfbaar met --plots ... (alleen deze) of
+# --skip-plots ... (alles behalve deze). Volgorde van rekentijd, ruwweg:
+#   spectra   : absorptiefactoren f_gsa/f_esa (snel, seconden)
+#   detuning  : emissie vs intensiteit per pompgolflengte (minuten)
+#   smax, ith : samenvattingen van de detuning-scan (vereisen de detuning-
+#               berekening; die draait dan ook als 'detuning' zelf uit staat,
+#               maar zonder de detuning-figuur)
+#   rise      : 95%-stijgtijd vs intensiteit (minuten)
+#   sigma     : piek-stijgtijd vs elektronische breedte (traagst: bouwt de
+#               spectra opnieuw voor elke breedte en twee golflengtes)
+# ---------------------------------------------------------------------------
+PLOTS = {
+    "spectra": True,
+    "detuning": True,
+    "smax": True,
+    "ith": True,
+    "rise": True,
+    "sigma": True,
+}
 T_STEADY_S = 20.0     # initial integration duration [s]
 MAX_STEADY_TIME_S = 1280.0
 STEADY_RELATIVE_TOL = 1e-6
@@ -2269,7 +2293,19 @@ def plot_absorption_factors(p, save_dir, wavelength_min_nm=900.0,
     return fig, wavelengths, f_gsa, f_esa
 
 
-def main(spectra_only=False, save_dir=None, data_only=False, no_show=False):
+def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plots=None):
+    """plots: dict zoals PLOTS; None gebruikt de instelling bovenin het script."""
+    plots = dict(PLOTS if plots is None else plots)
+    unknown = set(plots) - set(PLOTS)
+    if unknown:
+        raise ValueError(f"Onbekende plotnamen: {sorted(unknown)}; kies uit {sorted(PLOTS)}.")
+    need_detuning = plots.get("detuning") or plots.get("smax") or plots.get("ith")
+    need_kinetics = need_detuning or plots.get("rise") or plots.get("sigma")
+    import time
+    t_start = time.perf_counter()
+
+    def _done(label, t0):
+        print(f"  [{label}: {time.perf_counter() - t0:.1f} s]")
 
     # Only I_values[0] and I_values[-1] matter for the adaptive
     # Gaussian/Stark line-shape scans: the points inside the window are chosen adaptively.
@@ -2279,6 +2315,9 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False):
         100
     )
 
+    if not (spectra_only or data_only):
+        if not need_kinetics:
+            spectra_only = True  # Alleen spectra gevraagd: kinetiek overslaan.
     if not (spectra_only or data_only) or ABSORPTION_MODEL != "phonon_band":
         _require_pa_model()
     if not data_only:
@@ -2288,12 +2327,14 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False):
     if save_dir is None:
         save_dir = os.path.dirname(os.path.abspath(__file__))
     export_phonon_settings(save_dir)
-    if data_only:
+    t0 = time.perf_counter()
+    if data_only or not plots.get("spectra"):
         export_absorption_data(p8, save_dir)
         export_absorption_data(p8, save_dir, 1040.0, 1100.0)
     else:
         plot_absorption_factors(p8, save_dir)
         plot_absorption_factors(p8, save_dir, 1040.0, 1100.0)
+    _done("spectra", t0)
     if spectra_only or data_only:
         if _USE_STARK:
             check_thermal_population_coupling(p8)
@@ -2304,6 +2345,7 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False):
         return
 
     print(f"ABSORPTION_MODEL = {ABSORPTION_MODEL!r} ({ABSORPTION_LABEL})")
+    print("Onderdelen: " + ", ".join(f"{k}={'aan' if v else 'uit'}" for k, v in plots.items()))
     if _USE_STARK:
         thermal_checks = check_thermal_population_coupling(p8)
         print(f"Host: {HOST_MATERIAL}; T = {TEMPERATURE_K:g} K; "
@@ -2347,61 +2389,75 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False):
     # Detuning-curves voor het gekozen absorptiemodel
     # ---------------------------------------------------------------
 
-    (
-        stark_curves,
-        stark_thresholds,
-        stark_ana_thresholds,
-        stark_fit_lines
-    ) = compute_detuning_curves(
-        I_values,
-        p8,
-        wavelengths_nm,
-        kind=ABSORPTION_KIND,
-        label=ABSORPTION_LABEL
-    )
+    if need_detuning:
+        t0 = time.perf_counter()
+        (
+            stark_curves,
+            stark_thresholds,
+            stark_ana_thresholds,
+            stark_fit_lines
+        ) = compute_detuning_curves(
+            I_values,
+            p8,
+            wavelengths_nm,
+            kind=ABSORPTION_KIND,
+            label=ABSORPTION_LABEL
+        )
 
-    plot_wavelength_detuning(
-        stark_curves,
-        stark_thresholds,
-        lineshape_label=ABSORPTION_LABEL,
-        lineshape_kind=ABSORPTION_KIND,
-        fit_lines=stark_fit_lines,
-        savepath=os.path.join(save_dir, f"pa_wavelength_detuning{sfx}.pdf")
-    )
+        if plots.get("detuning"):
+            plot_wavelength_detuning(
+                stark_curves,
+                stark_thresholds,
+                lineshape_label=ABSORPTION_LABEL,
+                lineshape_kind=ABSORPTION_KIND,
+                fit_lines=stark_fit_lines,
+                savepath=os.path.join(save_dir, f"pa_wavelength_detuning{sfx}.pdf")
+            )
 
+        # -----------------------------------------------------------
+        # Separate summary plots versus wavelength
+        # -----------------------------------------------------------
+        if plots.get("smax"):
+            plot_smax_vs_wavelength(
+                stark_fit_lines,
+                savepath=os.path.join(save_dir, f"pa_smax_vs_wavelength{sfx}.pdf")
+            )
 
-    # ---------------------------------------------------------------
-    # Separate summary plots versus wavelength
-    # ---------------------------------------------------------------
-
-    plot_smax_vs_wavelength(
-        stark_fit_lines,
-        savepath=os.path.join(save_dir, f"pa_smax_vs_wavelength{sfx}.pdf")
-    )
-
-    plot_ith_vs_wavelength(
-        stark_thresholds,
-        stark_ana_thresholds,  # Geef nu ook de analytische drempelwaarden mee
-        savepath=os.path.join(save_dir, f"pa_ith_vs_wavelength{sfx}.pdf")
-    )
+        if plots.get("ith"):
+            plot_ith_vs_wavelength(
+                stark_thresholds,
+                stark_ana_thresholds,  # Geef nu ook de analytische drempelwaarden mee
+                savepath=os.path.join(save_dir, f"pa_ith_vs_wavelength{sfx}.pdf")
+            )
+        _done("detuning/smax/ith", t0)
+    else:
+        print("\nDetuning-scan overgeslagen (detuning, smax en ith staan uit).")
 
     # ---------------------------------------------------------------
     # Rise-time plots
     # ---------------------------------------------------------------
     I_min, I_max = float(I_values[0]), float(I_values[-1])
 
-    print("\n=== Rise time vs intensiteit ===")
-    rise_results = compute_rise_vs_intensity(p8, I_min, I_max)
-    if rise_results:
-        plot_rise_vs_intensity(
-            rise_results,
-            savepath=os.path.join(save_dir, f"pa_rise_time_vs_intensity{sfx}.pdf")
-        )
+    if plots.get("rise"):
+        t0 = time.perf_counter()
+        print("\n=== Rise time vs intensiteit ===")
+        rise_results = compute_rise_vs_intensity(p8, I_min, I_max)
+        if rise_results:
+            plot_rise_vs_intensity(
+                rise_results,
+                savepath=os.path.join(save_dir, f"pa_rise_time_vs_intensity{sfx}.pdf")
+            )
+        else:
+            print("  Geen geldige rise-time data: plot overgeslagen.")
+        _done("rise", t0)
     else:
-        print("  Geen geldige rise-time data: plot overgeslagen.")
+        print("\nRise-time-scan overgeslagen (rise staat uit).")
 
     # De sigma-sweep bestaat alleen als er Stark-spectra zijn
-    if _USE_STARK:
+    if not plots.get("sigma"):
+        print("\nSigma-sweep overgeslagen (sigma staat uit).")
+    elif _USE_STARK:
+        t0 = time.perf_counter()
         print("\n=== Piek rise time vs Stark sigma ===")
         peaks_by_wl = {
             lam: compute_rise_peak_vs_sigma(p8, lam, RISE_SIGMA_VALUES_CM1, I_min, I_max)
@@ -2411,8 +2467,11 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False):
             RISE_SIGMA_VALUES_CM1, peaks_by_wl,
             savepath=os.path.join(save_dir, f"pa_rise_peak_vs_sigma{sfx}.pdf")
         )
+        _done("sigma", t0)
     else:
         print("\nSigma-sweep overgeslagen (alleen zinvol met Stark-spectra).")
+
+    print(f"\nTotale rekentijd: {time.perf_counter() - t_start:.1f} s")
 
     # Display all figures together.
     # block=False prevents Spyder from remaining busy until the plot windows
@@ -2451,7 +2510,18 @@ if __name__ == "__main__":
     parser.add_argument("--coupling-f3", type=float, default=ESA_F3_HUANG_RHYS)
     parser.add_argument("--coupling-f2", type=float, default=ESA_F2_HUANG_RHYS)
     parser.add_argument("--kernel-tolerance", type=float, default=PHONON_TAIL_TOLERANCE)
+    plot_choice = parser.add_mutually_exclusive_group()
+    plot_choice.add_argument("--plots", nargs="+", choices=tuple(PLOTS), metavar="NAAM",
+                             help="Maak alleen deze onderdelen: " + ", ".join(PLOTS) + ".")
+    plot_choice.add_argument("--skip-plots", nargs="+", choices=tuple(PLOTS), metavar="NAAM",
+                             help="Sla deze onderdelen over; de rest volgt PLOTS bovenin.")
     args = parser.parse_args()
+    if args.plots is not None:
+        selected_plots = {name: name in args.plots for name in PLOTS}
+    elif args.skip_plots is not None:
+        selected_plots = {name: on and name not in args.skip_plots for name, on in PLOTS.items()}
+    else:
+        selected_plots = dict(PLOTS)
     if ABSORPTION_MODEL == "phonon_band":
         GSA_H5_HUANG_RHYS, GSA_F4_HUANG_RHYS = args.coupling_h5, args.coupling_f4
         ESA_H4_HUANG_RHYS, ESA_F3_HUANG_RHYS, ESA_F2_HUANG_RHYS = (
@@ -2466,4 +2536,4 @@ if __name__ == "__main__":
             print(f"{_name}: S = {_info['line_strength_1e-20_cm2']:.4f} e-20 cm2, "
                   f"aandeel in {_info['spectrum']} = {_info['share_in_spectrum']:.3f}")
     main(spectra_only=args.spectra_only, save_dir=args.output_dir,
-         data_only=args.data_only, no_show=args.no_show)
+         data_only=args.data_only, no_show=args.no_show, plots=selected_plots)

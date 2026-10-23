@@ -40,9 +40,27 @@ Volledige berekening, inclusief golflengtescan, stijgtijden en breedtesweeps:
 python fonon_model/pa_fononband.py --no-show --output-dir fonon_model/resultaten
 ```
 
+Je kunt kiezen welke onderdelen een volledige run maakt, met `--plots` (alleen deze) of `--skip-plots` (alles behalve deze), of met de dictionary `PLOTS` bovenin het script:
+
+| Naam | Onderdeel | Rekentijd (indicatie) |
+|---|---|---|
+| `spectra` | Absorptiefactoren f_gsa/f_esa (900–1500 nm en zoom) | ~1 s |
+| `detuning` | Emissie tegen intensiteit per pompgolflengte | ~8 s, samen met `smax` en `ith` |
+| `smax` | Helling van het avalanchedeel tegen golflengte | gebruikt de detuning-berekening |
+| `ith` | Drempel tegen golflengte | gebruikt de detuning-berekening |
+| `rise` | 95%-stijgtijd tegen intensiteit | ~2 s |
+| `sigma` | Piek-stijgtijd tegen elektronische breedte | ~2 min, verreweg het traagst |
+
+```text
+python fonon_model/pa_fononband.py --no-show --skip-plots sigma --output-dir fonon_model/resultaten
+python fonon_model/pa_fononband.py --no-show --plots ith rise --output-dir fonon_model/resultaten
+```
+
+`smax` en `ith` hebben de detuning-berekening nodig; die draait dan ook als `detuning` uit staat, alleen zonder de detuning-figuur. Staan alle kinetische onderdelen uit, dan worden alleen de spectra berekend. Per onderdeel wordt de rekentijd afgedrukt.
+
 Zonder `--output-dir` komen resultaten naast het script. `--no-show` slaat grafieken op en onderdrukt vensters. Voor het standaard fononmodel heeft `--data-only` alleen NumPy nodig en kan de export zonder `pa_model.py` of Matplotlib werken. Grafieken vereisen Matplotlib. De volledige populatieanalyse vereist de lokale modelmodule en SciPy; de snelle stationaire solver gebruikt LSODA en de stijgtijdzoeker gebruikt `brentq`.
 
-Een volledige run bevat veel integraties. De sweep bouwt spectra opnieuw op voor tien elektronische breedtes en twee pompgolflengtes; dit kan meerdere minuten duren. Begin met `--data-only` of `--spectra-only` wanneer je alleen absorptie wilt vergelijken.
+Een volledige run bevat veel integraties. De `sigma`-sweep bouwt spectra opnieuw op voor tien elektronische breedtes en twee pompgolflengtes en kost het grootste deel van de tijd; sla die over met `--skip-plots sigma`. Begin met `--data-only` of `--spectra-only` wanneer je alleen absorptie wilt vergelijken.
 
 ## Hoe het model werkt
 
