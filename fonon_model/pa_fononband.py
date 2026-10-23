@@ -19,9 +19,16 @@ zijn overgenomen uit het aangeleverde kinetiekscript.
 
 Bandinstellingen, Huang-Rhys-factoren en elektronische breedten staan
 hieronder bij de modelinstellingen. De bandvorm en koppelingen zijn de
-ongekalibreerde aannames uit het aangeleverde fononscript. De Gauss-band
-beslaat 225-450 cm^-1, met gewogen gemiddelde 320 cm^-1. Gebruik een eigen
-CSV via --band-file voor een andere vorm. Er is geen absorptievloer.
+ongekalibreerde aannames uit het aangeleverde fononscript. Standaard is de
+band de som van vier Gaussians die de gestippelde Yb/Tm-Ramancurve van
+Wilhelm et al. (2013, fig. 3A) benaderen (253/306/364/408 cm^-1), bemonsterd
+op knopen van 5 cm^-1 tussen 200 en 480 cm^-1. Met --band-profile gaussian
+blijft de oude enkele Gauss-band (gemiddelde 320 cm^-1) beschikbaar; een
+eigen CSV kan via --band-file. Er is geen absorptievloer.
+
+Kanaalgewichten volgen uit Judd-Ofelt: w_c ~ S_c * nu_c met
+S_c = sum_t Omega_t [U(t)]^2 (Omega_t: SI tabel S4 van Lee et al. 2021;
+[U(t)]^2: SI tabel S5 en Carnall et al. 1978, appendix XIII tabel 2).
 
 De oorspronkelijke modellen "broad_gsa", "stark", "si_1064" en "hybrid"
 blijven beschikbaar via ABSORPTION_MODEL. Alleen "broad_gsa" gebruikt nog
@@ -219,11 +226,39 @@ ABSORPTION_LABEL = {
 # Explicit model parameters (not linewidths/strengths supplied by Table 4).
 STARK_SIGMA_CM1 = 8.5  # ESA and unmodified GSA channels
 GSA_H5_SIGMA_CM1 = 300.0  # Gaussian sigma of 3H6 -> 3H5 only, cm^-1
-ESA_WEIGHT_3H4 = 1.0
-ESA_WEIGHT_3F3 = 1.0
-ESA_WEIGHT_3F2 = 1.0
-GSA_WEIGHT_3F4 = 1.0
-GSA_WEIGHT_3H5 = 1.0
+
+# Kanaalgewichten uit Judd-Ofelt (vervangen de vroegere gewichten 1.0).
+#   S_c = sum_t Omega_t [U(t)]^2_c   (lijnsterkte, 1e-20 cm^2)
+#   w_c = S_c * nu_c                 (nu_c: afstand tussen multiplet-zwaartepunten;
+#                                     sigma_int ~ nu * S)
+# Binnen een spectrum worden de gewichten genormaliseerd; door het 1064-nm-anker
+# tellen alleen de verhoudingen tussen kanalen van hetzelfde spectrum.
+JO_OMEGA_1E20_CM2 = np.array([2.37, 3.05, 0.41])  # Omega_2,4,6: SI tabel S4 (beta-NaGdF4:Tm3+)
+JO_REDUCED_MATRIX_ELEMENTS = {  # [U(2)]^2, [U(4)]^2, [U(6)]^2
+    "3H6 -> 3F4": (0.5395, 0.7261, 0.2421),  # SI tabel S5
+    "3H6 -> 3H5": (0.1074, 0.2314, 0.6385),  # SI tabel S5
+    "3F4 -> 3H4": (0.1275, 0.1311, 0.2113),  # SI tabel S5
+    "3F4 -> 3F3": (0.0025, 0.0005, 0.1688),  # Carnall et al. 1978, app. XIII tabel 2 (LaF3)
+    "3F4 -> 3F2": (0.3026, 0.0562, 0.0440),  # Carnall et al. 1978, app. XIII tabel 2 (LaF3)
+}
+JO_USE_FREQUENCY_FACTOR = True  # False: w_c = S_c (zonder nu_c)
+USE_JUDD_OFELT_WEIGHTS = True   # False: alle kanaalgewichten 1.0 (oude gedrag)
+
+
+def judd_ofelt_line_strength(name):
+    """Lijnsterkte S_c in 1e-20 cm^2."""
+    return float(JO_OMEGA_1E20_CM2 @ np.asarray(JO_REDUCED_MATRIX_ELEMENTS[name], dtype=float))
+
+
+def judd_ofelt_weight(name, lower_cm1, upper_cm1):
+    """Relatief kanaalgewicht S_c * nu_c (willekeurige schaal)."""
+    if not USE_JUDD_OFELT_WEIGHTS:
+        return 1.0
+    weight = judd_ofelt_line_strength(name)
+    if JO_USE_FREQUENCY_FACTOR:
+        weight *= float(np.mean(upper_cm1) - np.mean(lower_cm1))
+    return weight
+
 
 # Beide aparte achtergronden zijn volledig verwijderd uit StarkSpectrum.
 # Niet-nulgewichten worden afgewezen; deze waarden rapporteren de instelling.
@@ -272,12 +307,19 @@ CONV_GRID_PAD_CM1 = 8000.0   # margin around the sticks [cm^-1]
 
 # Fononmodel: "band" (integratie over golfgetal) of "discrete" (oude 3 modi).
 PHONON_MODEL = "band"
-BAND_MIN_CM1 = 225.0     # Wilhelm et al. 2013: onderrand fononbanden.
-BAND_MAX_CM1 = 450.0     # Wilhelm et al. 2013: bovenrand fononbanden.
-BAND_STEP_CM1 = 15.0     # Knoopafstand van de kwadratuur (veelvoud van 5).
-BAND_MEAN_CM1 = 320.0    # Gewogen gemiddelde, Yb/Tm-monster (304 voor Yb/Er).
-BAND_SIGMA_CM1 = 45.0    # AANNAME: breedte van de Gauss-vorm.
-BAND_PROFILE = "gaussian"  # "gaussian", "uniform" of "file"
+# Standaardprofiel "four_gaussian": som van vier Gaussians die de gestippelde
+# Yb/Tm-Ramancurve van Wilhelm et al. 2013, fig. 3A benaderen
+# (https://doi.org/10.7150/thno.5113). Vormproxy, geen gemeten fonon-DOS.
+# Sigma is een standaardafwijking, geen FWHM.
+FOUR_GAUSSIAN_CENTERS_CM1 = (253.0, 306.0, 364.0, 408.0)
+FOUR_GAUSSIAN_SIGMAS_CM1 = (14.0, 24.0, 15.0, 24.0)
+FOUR_GAUSSIAN_HEIGHTS = (0.68, 0.95, 0.66, 0.36)
+BAND_MIN_CM1 = 200.0     # >= 3.8 sigma onder de 253-cm^-1-component.
+BAND_MAX_CM1 = 480.0     # 3 sigma boven de 408-cm^-1-component.
+BAND_STEP_CM1 = 5.0      # Knoopafstand; fijner dan de smalste sigma (14 cm^-1).
+BAND_MEAN_CM1 = 320.0    # Alleen voor profiel "gaussian": gewogen gemiddelde.
+BAND_SIGMA_CM1 = 45.0    # Alleen voor profiel "gaussian": breedte (aanname).
+BAND_PROFILE = "four_gaussian"  # "four_gaussian", "gaussian", "uniform" of "file"
 DISCRETE_ENERGIES_CM1 = (250.0, 305.0, 365.0)
 DISCRETE_FRACTIONS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
 
@@ -557,6 +599,11 @@ CR_MISMATCH_CM1 = (ESA_TRANSITIONS_3H4_CM1[:, None]
 # rather than pre-flattened transition energies, so that each channel's
 # Boltzmann-weighted Stark structure (see StarkSpectrum.channel_shape) can be
 # computed from the individual lower/upper sublevel arrays.
+GSA_WEIGHT_3F4 = judd_ofelt_weight("3H6 -> 3F4", E_3H6_CM1, E_3F4_CM1)
+GSA_WEIGHT_3H5 = judd_ofelt_weight("3H6 -> 3H5", E_3H6_CM1, E_3H5_CM1)
+ESA_WEIGHT_3H4 = judd_ofelt_weight("3F4 -> 3H4", E_3F4_CM1, E_3H4_CM1)
+ESA_WEIGHT_3F3 = judd_ofelt_weight("3F4 -> 3F3", E_3F4_CM1, E_3F3_CM1)
+ESA_WEIGHT_3F2 = judd_ofelt_weight("3F4 -> 3F2", E_3F4_CM1, E_3F2_CM1)
 GSA_CHANNELS = {
     "3H6 -> 3F4": (E_3H6_CM1, E_3F4_CM1, GSA_WEIGHT_3F4),
     "3H6 -> 3H5": (E_3H6_CM1, E_3H5_CM1, GSA_WEIGHT_3H5),
@@ -566,6 +613,19 @@ ESA_CHANNELS = {
     "3F4 -> 3F3": (E_3F4_CM1, E_3F3_CM1, ESA_WEIGHT_3F3),
     "3F4 -> 3F2": (E_3F4_CM1, E_3F2_CM1, ESA_WEIGHT_3F2),
 }
+
+
+def channel_weight_report():
+    """Lijnsterktes en genormaliseerde kanaalaandelen per spectrum."""
+    report = {}
+    for spectrum, channels in (("GSA", GSA_CHANNELS), ("ESA", ESA_CHANNELS)):
+        total = sum(w for _, _, w in channels.values())
+        for name, (_, _, weight) in channels.items():
+            report[name] = {"spectrum": spectrum,
+                            "line_strength_1e-20_cm2": judd_ofelt_line_strength(name),
+                            "weight": float(weight),
+                            "share_in_spectrum": float(weight / total)}
+    return report
 
 
 def band_nodes(band_min, band_max, band_step):
@@ -615,7 +675,19 @@ def _read_profile_file(path):
 
 def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=None):
     """Genormaliseerde gewichten f_k (som = 1) van g(w) op de knopen."""
-    if profile == "uniform":
+    if profile == "four_gaussian":
+        centers = np.asarray(FOUR_GAUSSIAN_CENTERS_CM1, dtype=float)
+        sigmas = np.asarray(FOUR_GAUSSIAN_SIGMAS_CM1, dtype=float)
+        heights = np.asarray(FOUR_GAUSSIAN_HEIGHTS, dtype=float)
+        if (centers.shape != sigmas.shape or centers.shape != heights.shape
+                or np.any(sigmas <= 0) or np.any(heights < 0) or not np.any(heights > 0)):
+            raise ValueError("Four-Gaussian band: matching centers, positive sigmas, "
+                             "nonnegative heights required.")
+        # Profiel R(w) = sum_k A_k exp(-(w-w_k)^2/(2 s_k^2)); trapeziumgewicht per knoop.
+        # De oppervlakte per component (A_k s_k) volgt hier vanzelf uit de kwadratuur.
+        density = np.exp(-0.5 * ((nodes[:, None] - centers) / sigmas) ** 2) @ heights
+        weights = density * trapezoid
+    elif profile == "uniform":
         weights = trapezoid.copy()
     elif profile == "gaussian":
         if not np.isfinite(sigma_cm1) or sigma_cm1 <= 0:
@@ -644,7 +716,7 @@ def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=Non
         density = np.clip(np.interp(nodes, x, y, left=0.0, right=0.0), 0.0, None)
         weights = density * trapezoid
     else:
-        raise ValueError("profile must be 'gaussian', 'uniform' or 'file'.")
+        raise ValueError("profile must be 'four_gaussian', 'gaussian', 'uniform' or 'file'.")
     if not np.all(np.isfinite(weights)) or weights.sum() <= 0:
         raise ValueError("Band profile has no positive weight on the nodes.")
     return weights / weights.sum()
@@ -685,10 +757,17 @@ def set_phonon_model(model=PHONON_MODEL, band_min=BAND_MIN_CM1, band_max=BAND_MA
         "weighted_std_cm1": float(np.sqrt(
             np.sum(fractions * (energies - _weighted_mean(energies, fractions)) ** 2))),
     }
+    if model == "band" and profile == "four_gaussian":
+        PHONON_INFO["four_gaussian"] = {
+            "centers_cm1": list(FOUR_GAUSSIAN_CENTERS_CM1),
+            "sigmas_cm1": list(FOUR_GAUSSIAN_SIGMAS_CM1),
+            "heights": list(FOUR_GAUSSIAN_HEIGHTS),
+            "source": "Wilhelm et al. 2013, fig. 3A (Yb/Tm), https://doi.org/10.7150/thno.5113",
+        }
     return PHONON_INFO
 
 
-set_phonon_model()  # Standaard: band 225-450 cm^-1, gemiddelde 320 cm^-1.
+set_phonon_model()  # Standaard: vier Gaussians (Wilhelm et al.), knopen 200-480 cm^-1 per 5 cm^-1.
 
 def phonon_occupation(energy_cm1, temperature_k):
     """Bose occupation; T=0 is supported for the phonon kernel itself."""
@@ -2076,6 +2155,12 @@ def export_phonon_settings(save_dir):
         "absorption_model": ABSORPTION_MODEL,
         "temperature_K": TEMPERATURE_K,
         "phonon": PHONON_INFO,
+        "channel_weights_judd_ofelt": channel_weight_report(),
+        "judd_ofelt_enabled": USE_JUDD_OFELT_WEIGHTS,
+        "judd_ofelt_omega_1e-20_cm2": JO_OMEGA_1E20_CM2.tolist(),
+        "judd_ofelt_use_frequency_factor": JO_USE_FREQUENCY_FACTOR,
+        "judd_ofelt_sources": ["Lee et al. 2021, SI tabellen S4 en S5",
+                               "Carnall, Crosswhite & Crosswhite 1978, ANL-78-XX-95, appendix XIII tabel 2"],
         "reference_wavelength_nm": REFERENCE_WAVELENGTH_NM,
         "reference_anchor_enabled": SI_REFERENCE_ANCHOR,
         "reference_factors": [float(x) for x in
@@ -2087,7 +2172,7 @@ def export_phonon_settings(save_dir):
         "ESA": ESA_SPECTRUM.diagnostics,
         "factor_definition": "sigma(lambda)/sigma(1064 nm); applied once in pump rates",
         "electronic_components": "No phonon event; same full-spectrum normalization and anchor",
-        "assumptions": "Band shape, Huang-Rhys factors, electronic widths and relative line/channel strengths are uncalibrated assumptions from the supplied phonon script.",
+        "assumptions": "Band shape (Raman proxy), Huang-Rhys factors, electronic widths and relative Stark line strengths are uncalibrated assumptions; channel weights follow Judd-Ofelt.",
         "sources_from_supplied_script": ["https://doi.org/10.7150/thno.5113",
                                         "https://doi.org/10.1016/j.omx.2021.100102",
                                         "https://doi.org/10.1080/0026897021000046889"],
@@ -2357,7 +2442,8 @@ if __name__ == "__main__":
     parser.add_argument("--band-step", type=float, default=BAND_STEP_CM1)
     parser.add_argument("--band-mean", type=float, default=BAND_MEAN_CM1)
     parser.add_argument("--band-sigma", type=float, default=BAND_SIGMA_CM1)
-    parser.add_argument("--band-profile", choices=("gaussian", "uniform", "file"), default=BAND_PROFILE)
+    parser.add_argument("--band-profile", choices=("four_gaussian", "gaussian", "uniform", "file"),
+                        default=BAND_PROFILE)
     parser.add_argument("--band-file", type=Path, default=None)
     parser.add_argument("--coupling-h5", type=float, default=GSA_H5_HUANG_RHYS)
     parser.add_argument("--coupling-f4", type=float, default=GSA_F4_HUANG_RHYS)
@@ -2376,5 +2462,8 @@ if __name__ == "__main__":
                          args.band_step, profile, args.band_mean, args.band_sigma, args.band_file)
         GSA_SPECTRUM, ESA_SPECTRUM, _GSA_REFERENCE_FACTOR, _ESA_REFERENCE_FACTOR = _build_spectra()
         print(f"Fononen: {PHONON_DESCRIPTION}")
+        for _name, _info in channel_weight_report().items():
+            print(f"{_name}: S = {_info['line_strength_1e-20_cm2']:.4f} e-20 cm2, "
+                  f"aandeel in {_info['spectrum']} = {_info['share_in_spectrum']:.3f}")
     main(spectra_only=args.spectra_only, save_dir=args.output_dir,
          data_only=args.data_only, no_show=args.no_show)

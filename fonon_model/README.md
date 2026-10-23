@@ -48,7 +48,16 @@ Een volledige run bevat veel integraties. De sweep bouwt spectra opnieuw op voor
 
 De standaard is `ABSORPTION_MODEL = "phonon_band"`. GSA bevat ³H₆ → ³F₄/³H₅; ESA bevat ³F₄ → ³H₄/³F₃/³F₂. **Alle vijf kanalen** gebruiken Boltzmanngewogen Starklijnen, een elektronische Gaussbreedte van 8,5 cm⁻¹ en eindige-temperatuur Huang–Rhys-zijbanden. De fononbijdrage vervangt de effectieve H5-GSA-breedte van 300 cm⁻¹; die breedte wordt niet nogmaals op het fononspectrum toegepast.
 
-De band wordt benaderd met gewogen integratieknopen. Standaard ligt een afgeknotte Gaussian tussen 225 en 450 cm⁻¹, met knoopafstand 15 cm⁻¹, gewogen gemiddelde 320 cm⁻¹ en aangenomen profielbreedte 45 cm⁻¹. De Huang–Rhys-factor is standaard 0,05 per kanaal. Met `--phonon-model discrete` worden de drie modi van 250, 305 en 365 cm⁻¹ gebruikt. Ook bij die keuze houden de ESA-kanalen hier standaard fononkoppeling; dit verschilt van het zelfstandige GSA-fononscript.
+De band wordt benaderd met gewogen integratieknopen. Standaard (`--band-profile four_gaussian`) is het profiel de som van vier Gaussians die de gestippelde Yb/Tm-Ramancurve van Wilhelm et al. (2013, fig. 3A, [doi:10.7150/thno.5113](https://doi.org/10.7150/thno.5113)) benaderen, dezelfde parameters als in [FOUR_GAUSSIAN_PHONONS.md](FOUR_GAUSSIAN_PHONONS.md):
+
+| Component | Centrum (cm⁻¹) | σ (cm⁻¹) | Hoogte |
+|---|---:|---:|---:|
+| 1 | 253 | 14 | 0.68 |
+| 2 | 306 | 24 | 0.95 |
+| 3 | 364 | 15 | 0.66 |
+| 4 | 408 | 24 | 0.36 |
+
+Het profiel wordt bemonsterd op knopen van 5 cm⁻¹ tussen 200 en 480 cm⁻¹ (57 knopen, gewogen gemiddelde ≈ 325 cm⁻¹). Elke knoop is een scherpe mode; de breedte van de zijband komt uit de spreiding over de knopen plus de elektronische breedte. De oude enkele Gauss-band (225–450 cm⁻¹, gewogen gemiddelde 320 cm⁻¹, breedte 45 cm⁻¹) blijft beschikbaar met `--band-profile gaussian --band-min 225 --band-max 450 --band-step 15`. De Huang–Rhys-factor is standaard 0,05 per kanaal. Met `--phonon-model discrete` worden de drie modi van 250, 305 en 365 cm⁻¹ gebruikt. Ook bij die keuze houden de ESA-kanalen hier standaard fononkoppeling; dit verschilt van het zelfstandige GSA-fononscript.
 
 De relatieve absorptiefactoren zijn:
 
@@ -62,6 +71,27 @@ w_i(lambda) = sigma_i(lambda) * fotonflux_per_intensiteit(lambda)
 
 De componenten zonder fononevents worden met dezelfde normalisatie als het volledige spectrum bijgehouden. Dat is de bijdrage zonder enig fononevent, niet automatisch alle processen met netto energieverschuiving nul. Er wordt geen absorptievloer toegevoegd.
 
+### Kanaalgewichten (Judd–Ofelt)
+
+De relatieve sterkte van de vijf kanalen volgt uit Judd–Ofelt in plaats van een vast gewicht 1:
+
+```text
+S_c = Omega_2 [U(2)]^2 + Omega_4 [U(4)]^2 + Omega_6 [U(6)]^2
+w_c = S_c * nu_c / sum(S_c' * nu_c')   (som over de kanalen van hetzelfde spectrum)
+```
+
+met Ω₂, Ω₄, Ω₆ = 2,37; 3,05; 0,41 × 10⁻²⁰ cm² (SI tabel S4 van Lee et al. 2021) en ν_c de afstand tussen de multiplet-zwaartepunten. De matrixelementen komen uit SI tabel S5; die voor ³F₄ → ³F₃ en ³F₄ → ³F₂ ontbreken daar en komen uit dezelfde bron, Carnall, Crosswhite & Crosswhite (1978, ANL-78-XX-95), appendix XIII tabel 2.
+
+| Kanaal | S (10⁻²⁰ cm²) | Aandeel |
+|---|---:|---:|
+| ³H₆ → ³F₄ | 3,593 | 0,666 (GSA) |
+| ³H₆ → ³H₅ | 1,222 | 0,334 (GSA) |
+| ³F₄ → ³H₄ | 0,789 | 0,376 (ESA) |
+| ³F₄ → ³F₃ | 0,077 | 0,045 (ESA) |
+| ³F₄ → ³F₂ | 0,907 | 0,579 (ESA) |
+
+Door het 1064-nm-anker tellen alleen de verhoudingen binnen één spectrum. `USE_JUDD_OFELT_WEIGHTS = False` bovenin het script herstelt de oude gewichten 1,0. De matrixelementen gelden voor Tm³⁺:LaF₃ (intermediate coupling) en zijn een benadering voor NaYF₄.
+
 ## Instellingen en eigen bandbestanden
 
 Temperatuur en elektronische breedte staan bovenin bij `TEMPERATURE_K` en `STARK_SIGMA_CM1`. De temperatuur heeft in dit script geen commandoregeloptie. Voor de fononroute moet `LORENTZ_HWHM_CM1 = 0` blijven; een niet-nul Lorentzbreedte wordt afgewezen.
@@ -70,8 +100,8 @@ Temperatuur en elektronische breedte staan bovenin bij `TEMPERATURE_K` en `STARK
 |---|---|
 | `--phonon-model band` of `discrete` | Continue bandbenadering of drie discrete modi |
 | `--band-min`, `--band-max`, `--band-step` | Bandgrenzen en knoopafstand in cm⁻¹ |
-| `--band-profile gaussian`, `uniform` of `file` | Vorm van de band |
-| `--band-mean`, `--band-sigma` | Gewogen gemiddelde en aangenomen Gaussprofielbreedte in cm⁻¹ |
+| `--band-profile four_gaussian`, `gaussian`, `uniform` of `file` | Vorm van de band; standaard `four_gaussian` |
+| `--band-mean`, `--band-sigma` | Alleen voor `gaussian`: gewogen gemiddelde en aangenomen profielbreedte in cm⁻¹ |
 | `--band-file` | Eigen CSV met bandprofiel; selecteert de bestandsroute |
 | `--coupling-h5`, `--coupling-f4` | Totale koppelingen voor de twee GSA-kanalen |
 | `--coupling-h4`, `--coupling-f3`, `--coupling-f2` | Totale koppelingen voor de drie ESA-kanalen |
@@ -128,6 +158,6 @@ Gebruik aparte uitvoermappen voor parametervergelijkingen: nieuwe runs gebruiken
 
 ## Aannamen en controles
 
-Bandvorm, koppelingen, elektronische breedtes en relatieve lijn-/kanaalsterktes zijn ongekalibreerde modelaannamen. Een anker op 1064 nm is geen onafhankelijke kalibratie van alle andere golflengten. De lange-golflengteanalyse is verkennend. De bandbenadering beschrijft geen volledige gemeten fonon-DOS.
+Bandvorm, koppelingen, elektronische breedtes en relatieve Stark-lijnsterktes zijn ongekalibreerde modelaannamen. Een anker op 1064 nm is geen onafhankelijke kalibratie van alle andere golflengten. De lange-golflengteanalyse is verkennend. De bandbenadering beschrijft geen volledige gemeten fonon-DOS.
 
 De code bevat controles op de referentiefactoren, standaard stickgewichten, behoud van populatietotalen, overeenkomst tussen de snelle en de gedeelde populatievergelijkingen en de begrensde weggelaten kernelmassa. De stationaire solver controleert zowel tijdstabiliteit als de restterm van de populatievergelijkingen. Die ingebouwde controles vervangen geen vergelijking met meetgegevens. De volledige standaardscan is voor deze herindeling niet opnieuw uitgevoerd; dit README claimt daarom geen nieuwe validatie daarvan.
