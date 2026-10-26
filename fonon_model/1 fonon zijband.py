@@ -7,7 +7,8 @@ The cost grows quickly with N: see the estimate printed at the start of a run.
 The cutoff includes every order from zero to the chosen maximum.
 Each spectrum is normalized so that f(1064 nm) = 1 for both GSA and ESA
 (see NORMALIZATION_WAVELENGTH_NM).
-Plots show these factors directly, without equalizing local peak heights.
+Plots show these factors directly, without equalizing local peak heights;
+the spectrum is always saved twice, with a linear and with a logarithmic y-axis.
 The electronic Stark levels follow the supplied electronic script.
 All electronic widths are 8.5 cm^-1; the effective H5 width of 300 cm^-1
 is replaced by explicit phonon sidebands, not applied a second time.
@@ -27,13 +28,12 @@ phenomenological coupling proxy, not a measured phonon DOS or coupling.
 See README.md for the full theory and limitations.
 
 Usage (NumPy; Matplotlib only for plots):
-    python "1 fonon zijband.py" --max-phonons 6 --no-show
-    python "1 fonon zijband.py" --max-phonons 10 --no-show
-    python "1 fonon zijband.py" --max-phonons 2 --data-only
-    python "1 fonon zijband.py" --max-phonons 1 --no-show
-    python "1 fonon zijband.py" --phonon-bands 1 3 --no-show
-    python "1 fonon zijband.py" --no-phonons --no-show
-    python "1 fonon zijband.py" --log-y --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 6 --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 10 --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 2 --data-only
+    python gsa_esa_four_gaussian_multiphonon.py --max-phonons 1 --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --phonon-bands 1 3 --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --no-phonons --no-show
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ import numpy as np
 
 
 # Editable model assumptions. Sigma is a standard deviation, not FWHM.
-PHONON_CENTERS_CM1 = np.array([253.0, 306.0, 364.0, 408.0])
+PHONON_CENTERS_CM1 = np.array([250.0, 306.0, 364.0, 408.0])
 PHONON_SIGMAS_CM1 = np.array([14.0, 24.0, 15.0, 24.0])
 PHONON_PEAK_HEIGHTS = np.array([0.68, 0.95, 0.66, 0.36])
 PHONON_BANDS_ENABLED = np.array([True, True, True, True])
@@ -453,9 +453,12 @@ def export_profile(output_dir, enabled_bands=None):
     return grid, components, total
 
 
-def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="global", log_y=False,
+def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="global",
                  full_factors=None):
-    """Plot the model factors directly, with one constant scale per spectrum."""
+    """Plot the model factors directly, with one constant scale per spectrum.
+
+    Always saves two spectrum figures: one with a linear and one with a log y-axis.
+    """
     if normalization != "global":
         raise ValueError("Only global normalization is supported; local peak equalization was removed.")
     import matplotlib.pyplot as plt
@@ -463,30 +466,38 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="glob
     with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
                          "axes.spines.top": False, "axes.spines.right": False,
                          "svg.fonttype": "none"}):
-        fig, ax = plt.subplots(figsize=(10.5, 5.8))
+        # Evaluate every curve once; both figures reuse the same data.
+        curves = []
         for column, (spectrum, color, label) in enumerate(
                 ((gsa, "#ba4a18", "GSA"), (esa, "#1468b1", "ESA"))):
             full = spectrum.factor(wavelengths) if full_factors is None else full_factors[:, column]
             zero = spectrum.factor(wavelengths, zero_only=True)
-            full_plot = np.where(full > 0, full, np.nan) if log_y else full
-            zero_plot = np.where(zero > 0, zero, np.nan) if log_y else zero
-            ax.plot(wavelengths, full_plot, color=color, label=label)
-            ax.plot(wavelengths, zero_plot, color=color,
-                    linestyle="--", alpha=0.65, label=f"{label}, without fononevent")
-        # Upper limit is left free: after 1064 nm normalization the peaks can lie far above 1.
-        ax.set(xlabel="Pump wavelength (nm)", ylabel="Relative absorption factor f",
-               xlim=(wavelengths[0], wavelengths[-1]),
-               ylim=(PLOT_MIN_FACTOR if log_y else 0.0, None),
-               yscale="log" if log_y else "linear")
-        ax.set_yscale("log")
-        ax.set_ylim(1e-20)
-        ax.axvline(NORMALIZATION_WAVELENGTH_NM, color="#7d858c", linestyle=":", linewidth=1,
-                   label=f"{NORMALIZATION_WAVELENGTH_NM:g} nm (f = 1)")
-        ax.grid(alpha=0.2)
-        ax.legend(fontsize=9, ncol=2)
-        fig.tight_layout()
-        for suffix in ("png", "svg"):
-            fig.savefig(output_dir / f"f_gsa_f_esa_four_gaussian_multiphonon.{suffix}", dpi=180)
+            curves.append((full, zero, color, label))
+        spectrum_figs = []
+        for scale_name, log_y in (("linear", False), ("log", True)):
+            fig, ax = plt.subplots(figsize=(10.5, 5.8))
+            for full, zero, color, label in curves:
+                full_plot = np.where(full > 0, full, np.nan) if log_y else full
+                zero_plot = np.where(zero > 0, zero, np.nan) if log_y else zero
+                ax.plot(wavelengths, full_plot, color=color, label=label)
+                ax.plot(wavelengths, zero_plot, color=color,
+                        linestyle="--", alpha=0.65, label=f"{label}, zero-phonon only")
+            # Upper limit is left free: after 1064 nm normalization the peaks can lie far above 1.
+            ax.set(xlabel="Pump wavelength (nm)", ylabel="Relative absorption factor f",
+                   xlim=(wavelengths[0], wavelengths[-1]),
+                   yscale="log" if log_y else "linear",
+                   title=f"GSA and ESA factors ({scale_name} y-axis)")
+            peak = max(float(np.nanmax(c[0])) for c in curves)
+            # Top is set explicitly: a log axis otherwise pads symmetrically in decades.
+            ax.set_ylim(PLOT_MIN_FACTOR, 10*peak) if log_y else ax.set_ylim(0.0, 1.05*peak)
+            ax.axvline(NORMALIZATION_WAVELENGTH_NM, color="#7d858c", linestyle=":", linewidth=1,
+                       label=f"{NORMALIZATION_WAVELENGTH_NM:g} nm (f = 1)")
+            ax.grid(alpha=0.2)
+            ax.legend(fontsize=9, ncol=2)
+            fig.tight_layout()
+            for suffix in ("png", "svg"):
+                fig.savefig(output_dir / f"f_gsa_f_esa_four_gaussian_multiphonon_{scale_name}.{suffix}", dpi=180)
+            spectrum_figs.append(fig)
 
         profile_fig, profile_ax = plt.subplots(figsize=(9, 4.8))
         grid, components, total = profile
@@ -495,18 +506,18 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="glob
         scale = components.sum(axis=1).max()
         for k in range(4):
             style = {} if enabled[k] else {"color": "#bfc4c9", "alpha": 0.55}
-            status = "" if enabled[k] else " (uit)"
+            status = "" if enabled[k] else " (off)"
             profile_ax.plot(grid, components[:, k]/scale, linestyle="--", **style,
                             label=f"Gaussian {k+1}: {PHONON_CENTERS_CM1[k]:g} cm⁻¹{status}")
-        profile_ax.plot(grid, total/scale, color="#303844", linewidth=2, label="Som van actieve banden")
-        profile_ax.set(xlabel="Ramanverschuiving (cm⁻¹)", ylabel="Relatieve profielintensiteit",
+        profile_ax.plot(grid, total/scale, color="#303844", linewidth=2, label="Sum of active bands")
+        profile_ax.set(xlabel="Raman shift (cm⁻¹)", ylabel="Relative profile intensity",
                        xlim=(200, 450), ylim=(0, 1.08))
         profile_ax.legend(fontsize=9)
         profile_ax.grid(alpha=0.2)
         profile_fig.tight_layout()
         for suffix in ("png", "svg"):
             profile_fig.savefig(output_dir / f"phonon_profile_four_gaussians_multiphonon.{suffix}", dpi=180)
-        return fig, profile_fig
+        return (*spectrum_figs, profile_fig)
 
 
 def channel_weight_report():
@@ -540,7 +551,6 @@ def main():
                           help="Enable only these bands, for example: --phonon-bands 1 3")
     parser.add_argument("--plot-normalization", choices=("global",), default="global",
                         help="Show the model factors directly (default); no local peak equalization.")
-    parser.add_argument("--log-y", action="store_true", help="Use a logarithmic spectrum axis; default is linear.")
     parser.add_argument("--data-only", action="store_true", help="CSV/JSON only; no Matplotlib needed.")
     parser.add_argument("--no-show", action="store_true", help="Save plots without opening a window.")
     parser.add_argument("--output-dir", type=Path, default=None,
@@ -598,7 +608,7 @@ def main():
         "phonon_bands_enabled": enabled.tolist(),
         "active_phonon_bands": (np.flatnonzero(enabled) + 1).tolist(),
         "plot_normalization": args.plot_normalization,
-        "plot_y_scale": "log" if args.log_y else "linear",
+        "plot_y_scales": ["linear", "log"],
         "phonon_centers_cm1": PHONON_CENTERS_CM1.tolist(),
         "phonon_sigmas_cm1": PHONON_SIGMAS_CM1.tolist(),
         "phonon_peak_heights": PHONON_PEAK_HEIGHTS.tolist(),
@@ -640,7 +650,7 @@ def main():
               f"omitted Poisson mass = {diagnostics['poisson_omitted_probability']:.4g}")
     if not args.data_only:
         figures = plot_results(args.output_dir, wavelengths, gsa, esa, profile,
-                               args.plot_normalization, log_y=args.log_y,
+                               args.plot_normalization,
                                full_factors=factors[:, 1:])
         import matplotlib.pyplot as plt
         if args.no_show:
