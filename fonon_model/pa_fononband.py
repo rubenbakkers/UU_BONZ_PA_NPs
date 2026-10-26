@@ -1,58 +1,63 @@
 # -*- coding: utf-8 -*-
 """
-Tm3+ in NaYF4: GSA/ESA met fononband, gekoppeld aan de bestaande PA-kinetiek.
+Tm3+ in NaYF4: GSA/ESA with a phonon band, coupled to the existing PA kinetics.
 
-Standaard ABSORPTION_MODEL="phonon_band": dezelfde continue, eindige-T
-Huang-Rhys-kernel als in het aangeleverde fononscript, voor alle vijf
-GSA/ESA-kanalen. De elektronische Gauss-sigma is STARK_SIGMA_CM1=8.5 cm^-1;
-de fononzijbanden vervangen de effectieve H5-breedte van 300 cm^-1.
+Default ABSORPTION_MODEL="phonon_band": the same continuous, finite-T
+Huang-Rhys kernel as in the supplied phonon script, for all five GSA/ESA
+channels. The electronic Gaussian sigma is STARK_SIGMA_CM1=8.5 cm^-1; the
+phonon sidebands replace the effective H5 width of 300 cm^-1.
 
     f_gsa(lambda) = sigma_gsa(lambda) / sigma_gsa(1064 nm)
     f_esa(lambda) = sigma_esa(lambda) / sigma_esa(1064 nm)
     w_i(lambda) = cross_section_to_rate_coeff(sigma_i_ref, lambda) * f_i(lambda)
 
-Beide factoren zijn 1 bij 1064 nm. Ze worden precies eenmaal toegepast
-in de pompsnelheden, voor zowel de snelle als de pa_model-solver. De
-Boltzmanngewichten zitten al in de spectra; de populatietermen blijven
-R_gsa*N0 en R_esa*N1. De rate equations, relaxatie- en transferparameters
-zijn overgenomen uit het aangeleverde kinetiekscript.
+Both factors are 1 at 1064 nm. They are applied exactly once in the pump
+rates, for both the fast and the pa_model solver. The Boltzmann weights are
+already contained in the spectra; the population terms remain R_gsa*N0 and
+R_esa*N1. The rate equations, relaxation and transfer parameters are taken
+from the supplied kinetics script.
 
-Bandinstellingen, Huang-Rhys-factoren en elektronische breedten staan
-hieronder bij de modelinstellingen. De bandvorm en koppelingen zijn de
-ongekalibreerde aannames uit het aangeleverde fononscript. Standaard is de
-band de som van vier Gaussians die de gestippelde Yb/Tm-Ramancurve van
-Wilhelm et al. (2013, fig. 3A) benaderen (253/306/364/408 cm^-1), bemonsterd
-op knopen van 5 cm^-1 tussen 200 en 480 cm^-1. Met --band-profile gaussian
-blijft de oude enkele Gauss-band (gemiddelde 320 cm^-1) beschikbaar; een
-eigen CSV kan via --band-file. Er is geen absorptievloer.
+Band settings, Huang-Rhys factors and electronic widths are listed below with
+the model settings. The band shape and couplings are the uncalibrated
+assumptions of the supplied phonon script. By default the band is the sum of
+four Gaussians that approximate the dotted Yb/Tm Raman curve of Wilhelm et
+al. (2013, Fig. 3A) (250/306/364/408 cm^-1, the same values as in the
+"1 fonon zijband" script), sampled on 5 cm^-1 nodes between 200 and
+480 cm^-1. With --band-profile gaussian the old single Gaussian band (mean
+320 cm^-1) remains available; a custom CSV can be given with --band-file.
+There is no absorption floor.
 
-Kanaalgewichten volgen uit Judd-Ofelt: w_c ~ S_c * nu_c met
-S_c = sum_t Omega_t [U(t)]^2 (Omega_t: SI tabel S4 van Lee et al. 2021;
-[U(t)]^2: SI tabel S5 en Carnall et al. 1978, appendix XIII tabel 2).
+Channel weights follow from Judd-Ofelt: w_c ~ S_c * nu_c with
+S_c = sum_t Omega_t [U(t)]^2 (Omega_t: SI Table S4 of Lee et al. 2021;
+[U(t)]^2: SI Table S5 and Carnall et al. 1978, Appendix XIII Table 2).
 
-De oorspronkelijke modellen "broad_gsa", "stark", "si_1064" en "hybrid"
-blijven beschikbaar via ABSORPTION_MODEL. Alleen "broad_gsa" gebruikt nog
-GSA_H5_SIGMA_CM1=300 cm^-1. Niet-nul Lorentzbreedte wordt voor de
-fononroute expliciet afgewezen: de aangeleverde kernel gebruikt Gauss-lijnen.
+The absorption spectrum is always saved twice, with a linear and with a
+logarithmic y-axis (<name>_linear.png/.svg and <name>_log.png/.svg); both
+figures show the same factors, which are written once to <name>.csv.
 
-Gebruik (met dit script in dezelfde map als je bestaande pa_model.py):
+The original models "broad_gsa", "stark", "si_1064" and "hybrid" remain
+available through ABSORPTION_MODEL. Only "broad_gsa" still uses
+GSA_H5_SIGMA_CM1=300 cm^-1. A nonzero Lorentz width is explicitly rejected for
+the phonon route: the supplied kernel uses Gaussian lines.
+
+Usage (with this script in the same folder as your existing pa_model.py):
     python pa_fononband.py
     python pa_fononband.py --spectra-only --no-show
     python pa_fononband.py --data-only
     python pa_fononband.py --spectra-only --coupling-h5 0.08
     python pa_fononband.py --data-only --phonon-model discrete
-    python pa_fononband.py --spectra-only --band-file eigen_band.csv
-    python pa_fononband.py --no-show --plots spectra ith          # alleen deze
-    python pa_fononband.py --no-show --skip-plots sigma rise      # alles behalve deze
+    python pa_fononband.py --spectra-only --band-file my_band.csv
+    python pa_fononband.py --no-show --plots spectra ith          # only these
+    python pa_fononband.py --no-show --skip-plots sigma rise      # all except these
 
-Benodigd: numpy; voor grafieken matplotlib; voor snelle kinetiek scipy;
-voor de populatiesimulaties de bestaande pa_model.py. De standaard
-fononfactoren kunnen zonder pa_model worden geexporteerd (--data-only).
+Requirements: numpy; matplotlib for plots; scipy for the fast kinetics; the
+existing pa_model.py for the population simulations. The default phonon
+factors can be exported without pa_model (--data-only).
 """
 
 from __future__ import annotations
 
-import os  # Toegevoegd voor het opslaan in de specifieke map
+import os  # Used for saving into the chosen output folder
 import contextlib
 import json
 from pathlib import Path
@@ -98,17 +103,17 @@ def _require_pa_model():
     if pa_model is None:
         _require_matplotlib()
         raise RuntimeError(
-            "Plaats je bestaande pa_model.py naast dit script voor kinetiek "
-            "en de oudere absorptiemodellen. --data-only en --spectra-only "
-            "werken zonder deze module met ABSORPTION_MODEL='phonon_band'.")
+            "Place your existing pa_model.py next to this script for the kinetics "
+            "and the older absorption models. --data-only and --spectra-only "
+            "work without this module with ABSORPTION_MODEL='phonon_band'.")
 
 
 def _require_matplotlib():
     if plt is None:
-        raise RuntimeError("Grafieken vereisen matplotlib; --data-only vereist alleen numpy.")
+        raise RuntimeError("Plots require matplotlib; --data-only requires numpy only.")
 
 _LOG_PLOT_FLOOR = 1e-300
-# Ondergrens van alleen de absorptiegrafiek; geen vloer in het spectrum.
+# Lower limit of the log absorption plot only; no floor is added to the spectrum.
 ABSORPTION_PLOT_MIN_FACTOR = 1e-20
 
 # A real avalanche has a sharp knee with s_max of order 10-100 (about 40 for
@@ -135,17 +140,18 @@ N_POLISH = 40
 INCLUDE_EXTRAPOLATED_WAVELENGTHS = False
 
 # ---------------------------------------------------------------------------
-# Welke onderdelen/plots een volledige run maakt (True = aan, False = uit).
-# Op de commandoregel overschrijfbaar met --plots ... (alleen deze) of
-# --skip-plots ... (alles behalve deze). Volgorde van rekentijd, ruwweg:
-#   spectra   : absorptiefactoren f_gsa/f_esa (snel, seconden)
-#   detuning  : emissie vs intensiteit per pompgolflengte (minuten)
-#   smax, ith : samenvattingen van de detuning-scan (vereisen de detuning-
-#               berekening; die draait dan ook als 'detuning' zelf uit staat,
-#               maar zonder de detuning-figuur)
-#   rise      : 95%-stijgtijd vs intensiteit (minuten)
-#   sigma     : piek-stijgtijd vs elektronische breedte (traagst: bouwt de
-#               spectra opnieuw voor elke breedte en twee golflengtes)
+# Which parts/plots a full run makes (True = on, False = off).
+# Override on the command line with --plots ... (only these) or
+# --skip-plots ... (all except these). Roughly in order of run time:
+#   spectra   : absorption factors f_gsa/f_esa, always with a linear and a
+#               log y-axis (fast, seconds)
+#   detuning  : emission vs intensity per pump wavelength (minutes)
+#   smax, ith : summaries of the detuning scan (they need the detuning
+#               calculation; it also runs when 'detuning' itself is off,
+#               but without the detuning figure)
+#   rise      : 95% rise time vs intensity (minutes)
+#   sigma     : peak rise time vs electronic width (slowest: rebuilds the
+#               spectra for every width and two wavelengths)
 # ---------------------------------------------------------------------------
 PLOTS = {
     "spectra": True,
@@ -225,57 +231,57 @@ E_3F2_CM1 = np.array([
 ])
 
 # ---------------------------------------------------------------------------
-# ABSORPTIEMODEL: precies een model tegelijk actief
-#   "phonon_band": elektronische Gauss-lijnen + fononzijbanden, 1064-nm-anker
-#   "broad_gsa": GSA H5 sigma300, GSA/ESA zonder achtergrond, anker behouden
-#   "stark"   : alleen Stark-sticks (geen achtergrond, geen 1064-nm-anker)
-#   "si_1064" : Gauss-lineshape met SI-amplitudes (piekgenormeerd)
-#   "hybrid"  : smalle Stark-lijnen + 1064-nm-anker; geen achtergrond
+# ABSORPTION MODEL: exactly one model active at a time
+#   "phonon_band": electronic Gaussian lines + phonon sidebands, 1064-nm anchor
+#   "broad_gsa": GSA H5 sigma 300, GSA/ESA without background, anchor kept
+#   "stark"   : Stark sticks only (no background, no 1064-nm anchor)
+#   "si_1064" : Gaussian line shape with SI amplitudes (peak-normalized)
+#   "hybrid"  : narrow Stark lines + 1064-nm anchor; no background
 # ---------------------------------------------------------------------------
 ABSORPTION_MODEL = "phonon_band"  # "phonon_band", "broad_gsa", "stark", "si_1064", "hybrid"
 
 if ABSORPTION_MODEL not in ("phonon_band", "stark", "si_1064", "hybrid", "broad_gsa"):
     raise ValueError("Unknown ABSORPTION_MODEL; use phonon_band, broad_gsa, stark, si_1064 or hybrid.")
 
-_USE_STARK = ABSORPTION_MODEL in ("phonon_band", "stark", "hybrid", "broad_gsa")   # Stark-spectra gebruiken?
+_USE_STARK = ABSORPTION_MODEL in ("phonon_band", "stark", "hybrid", "broad_gsa")   # Use Stark spectra?
 ABSORPTION_KIND = "stark_gaussian" if _USE_STARK else "gaussian"
 ABSORPTION_LABEL = {
-    "phonon_band": "GSA + ESA met fononband + 1064-nm-anker",
-    "stark": "Stark GSA + ESA (geen achtergrond)",
-    "si_1064": "Gaussian met SI-amplitudes (piekgenormeerd)",
-    "hybrid": "Stark zonder achtergrond + 1064-nm-anker",
-    "broad_gsa": "Verbrede GSA + ESA zonder achtergrond + 1064-nm-anker",
+    "phonon_band": "GSA + ESA with phonon band + 1064-nm anchor",
+    "stark": "Stark GSA + ESA (no background)",
+    "si_1064": "Gaussian with SI amplitudes (peak-normalized)",
+    "hybrid": "Stark without background + 1064-nm anchor",
+    "broad_gsa": "Broadened GSA + ESA without background + 1064-nm anchor",
 }[ABSORPTION_MODEL]
 
 # Explicit model parameters (not linewidths/strengths supplied by Table 4).
 STARK_SIGMA_CM1 = 8.5  # ESA and unmodified GSA channels
 GSA_H5_SIGMA_CM1 = 300.0  # Gaussian sigma of 3H6 -> 3H5 only, cm^-1
 
-# Kanaalgewichten uit Judd-Ofelt (vervangen de vroegere gewichten 1.0).
-#   S_c = sum_t Omega_t [U(t)]^2_c   (lijnsterkte, 1e-20 cm^2)
-#   w_c = S_c * nu_c                 (nu_c: afstand tussen multiplet-zwaartepunten;
+# Channel weights from Judd-Ofelt (replace the former weights 1.0).
+#   S_c = sum_t Omega_t [U(t)]^2_c   (line strength, 1e-20 cm^2)
+#   w_c = S_c * nu_c                 (nu_c: gap between the multiplet barycentres;
 #                                     sigma_int ~ nu * S)
-# Binnen een spectrum worden de gewichten genormaliseerd; door het 1064-nm-anker
-# tellen alleen de verhoudingen tussen kanalen van hetzelfde spectrum.
-JO_OMEGA_1E20_CM2 = np.array([2.37, 3.05, 0.41])  # Omega_2,4,6: SI tabel S4 (beta-NaGdF4:Tm3+)
+# The weights are normalized within a spectrum; because of the 1064-nm anchor
+# only the ratios between channels of the same spectrum matter.
+JO_OMEGA_1E20_CM2 = np.array([2.37, 3.05, 0.41])  # Omega_2,4,6: SI Table S4 (beta-NaGdF4:Tm3+)
 JO_REDUCED_MATRIX_ELEMENTS = {  # [U(2)]^2, [U(4)]^2, [U(6)]^2
-    "3H6 -> 3F4": (0.5395, 0.7261, 0.2421),  # SI tabel S5
-    "3H6 -> 3H5": (0.1074, 0.2314, 0.6385),  # SI tabel S5
-    "3F4 -> 3H4": (0.1275, 0.1311, 0.2113),  # SI tabel S5
-    "3F4 -> 3F3": (0.0025, 0.0005, 0.1688),  # Carnall et al. 1978, app. XIII tabel 2 (LaF3)
-    "3F4 -> 3F2": (0.3026, 0.0562, 0.0440),  # Carnall et al. 1978, app. XIII tabel 2 (LaF3)
+    "3H6 -> 3F4": (0.5395, 0.7261, 0.2421),  # SI Table S5
+    "3H6 -> 3H5": (0.1074, 0.2314, 0.6385),  # SI Table S5
+    "3F4 -> 3H4": (0.1275, 0.1311, 0.2113),  # SI Table S5
+    "3F4 -> 3F3": (0.0025, 0.0005, 0.1688),  # Carnall et al. 1978, App. XIII Table 2 (LaF3)
+    "3F4 -> 3F2": (0.3026, 0.0562, 0.0440),  # Carnall et al. 1978, App. XIII Table 2 (LaF3)
 }
-JO_USE_FREQUENCY_FACTOR = True  # False: w_c = S_c (zonder nu_c)
-USE_JUDD_OFELT_WEIGHTS = True   # False: alle kanaalgewichten 1.0 (oude gedrag)
+JO_USE_FREQUENCY_FACTOR = True  # False: w_c = S_c (without nu_c)
+USE_JUDD_OFELT_WEIGHTS = True   # False: all channel weights 1.0 (old behaviour)
 
 
 def judd_ofelt_line_strength(name):
-    """Lijnsterkte S_c in 1e-20 cm^2."""
+    """Line strength S_c in 1e-20 cm^2."""
     return float(JO_OMEGA_1E20_CM2 @ np.asarray(JO_REDUCED_MATRIX_ELEMENTS[name], dtype=float))
 
 
 def judd_ofelt_weight(name, lower_cm1, upper_cm1):
-    """Relatief kanaalgewicht S_c * nu_c (willekeurige schaal)."""
+    """Relative channel weight S_c * nu_c (arbitrary scale)."""
     if not USE_JUDD_OFELT_WEIGHTS:
         return 1.0
     weight = judd_ofelt_line_strength(name)
@@ -284,17 +290,17 @@ def judd_ofelt_weight(name, lower_cm1, upper_cm1):
     return weight
 
 
-# Beide aparte achtergronden zijn volledig verwijderd uit StarkSpectrum.
-# Niet-nulgewichten worden afgewezen; deze waarden rapporteren de instelling.
+# Both separate backgrounds have been removed completely from StarkSpectrum.
+# Nonzero weights are rejected; these values only report the setting.
 ESA_BACKGROUND_WEIGHT = 0.0
 GSA_BACKGROUND_WEIGHT = 0.0
 
-# SI-anker (1064 nm): in "phonon_band", "hybrid" en "broad_gsa". In "si_1064" gebruikt
-# pa_model piekgenormeerde Gauss-factoren; in "stark" is er geen anker.
+# SI anchor (1064 nm): in "phonon_band", "hybrid" and "broad_gsa". In "si_1064"
+# pa_model uses peak-normalized Gaussian factors; "stark" has no anchor.
 SI_REFERENCE_ANCHOR = ABSORPTION_MODEL in ("phonon_band", "hybrid", "broad_gsa")
 REFERENCE_WAVELENGTH_NM = 1064.0
-# Historische namen: alleen normeringsgrid en Gauss-envelope in si_1064.
-# Deze centra/breedtes voegen geen achtergrond toe aan de Stark-spectra.
+# Historical names: only the normalization grid and Gaussian envelope in si_1064.
+# These centers/widths add no background to the Stark spectra.
 ESA_BACKGROUND_LAMBDA0_NM = getattr(pa_model, "DEFAULT_LAMBDA0_ESA_NM", None)
 ESA_BACKGROUND_SIGMA_NM = getattr(pa_model, "DEFAULT_SIGMA_LAMBDA_ESA_NM", None)
 # 3H5 lies BELOW the photon energy at 1064 nm: subtract the mismatch.
@@ -329,36 +335,37 @@ CONV_GRID_STEP_CM1 = 0.5     # grid step [cm^-1]
 CONV_GRID_PAD_CM1 = 8000.0   # margin around the sticks [cm^-1]
 
 
-# Fononmodel: "band" (integratie over golfgetal) of "discrete" (oude 3 modi).
+# Phonon model: "band" (integration over wavenumber) or "discrete" (old 3 modes).
 PHONON_MODEL = "band"
-# Standaardprofiel "four_gaussian": som van vier Gaussians die de gestippelde
-# Yb/Tm-Ramancurve van Wilhelm et al. 2013, fig. 3A benaderen
-# (https://doi.org/10.7150/thno.5113). Vormproxy, geen gemeten fonon-DOS.
-# Sigma is een standaardafwijking, geen FWHM.
-FOUR_GAUSSIAN_CENTERS_CM1 = (253.0, 306.0, 364.0, 408.0)
+# Default profile "four_gaussian": sum of four Gaussians that approximate the
+# dotted Yb/Tm Raman curve of Wilhelm et al. 2013, Fig. 3A
+# (https://doi.org/10.7150/thno.5113). Shape proxy, not a measured phonon DOS.
+# Same centres, sigmas and heights as PHONON_*_CM1 in the "1 fonon zijband"
+# script. Sigma is a standard deviation, not a FWHM.
+FOUR_GAUSSIAN_CENTERS_CM1 = (250.0, 306.0, 364.0, 408.0)
 FOUR_GAUSSIAN_SIGMAS_CM1 = (14.0, 24.0, 15.0, 24.0)
 FOUR_GAUSSIAN_HEIGHTS = (0.68, 0.95, 0.66, 0.36)
-BAND_MIN_CM1 = 200.0     # >= 3.8 sigma onder de 253-cm^-1-component.
-BAND_MAX_CM1 = 480.0     # 3 sigma boven de 408-cm^-1-component.
-BAND_STEP_CM1 = 5.0      # Knoopafstand; fijner dan de smalste sigma (14 cm^-1).
-BAND_MEAN_CM1 = 320.0    # Alleen voor profiel "gaussian": gewogen gemiddelde.
-BAND_SIGMA_CM1 = 45.0    # Alleen voor profiel "gaussian": breedte (aanname).
-BAND_PROFILE = "four_gaussian"  # "four_gaussian", "gaussian", "uniform" of "file"
+BAND_MIN_CM1 = 200.0     # 3.6 sigma below the 250-cm^-1 component.
+BAND_MAX_CM1 = 480.0     # 3 sigma above the 408-cm^-1 component.
+BAND_STEP_CM1 = 5.0      # Node spacing; finer than the narrowest sigma (14 cm^-1).
+BAND_MEAN_CM1 = 320.0    # Only for profile "gaussian": weighted mean.
+BAND_SIGMA_CM1 = 45.0    # Only for profile "gaussian": width (assumption).
+BAND_PROFILE = "four_gaussian"  # "four_gaussian", "gaussian", "uniform" or "file"
 DISCRETE_ENERGIES_CM1 = (250.0, 305.0, 365.0)
 DISCRETE_FRACTIONS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
 
-# Totale Huang-Rhys-factoren per kanaal (ongekalibreerd).
-GSA_H5_HUANG_RHYS = 0.05  # Te fitten totale S voor 3H6 -> 3H5.
-GSA_F4_HUANG_RHYS = 0.05  # Afzonderlijk te fitten voor 3H6 -> 3F4.
+# Total Huang-Rhys factors per channel (uncalibrated).
+GSA_H5_HUANG_RHYS = 0.05  # Total S for 3H6 -> 3H5, to be fitted.
+GSA_F4_HUANG_RHYS = 0.05  # To be fitted separately for 3H6 -> 3F4.
 ESA_H4_HUANG_RHYS = 0.05  # 3F4 -> 3H4.
 ESA_F3_HUANG_RHYS = 0.05  # 3F4 -> 3F3.
 ESA_F2_HUANG_RHYS = 0.05  # 3F4 -> 3F2.
-PHONON_SHIFT_GRID_STEP_CM1 = 5.0  # Modi moeten exact op dit rooster liggen.
-PHONON_TAIL_TOLERANCE = 1e-35  # Bovengrens ontbrekende totale kernelmassa.
-PHONON_MAX_EVENTS_PER_MODE = 256  # Veiligheidslimiet; overschrijding is een fout.
-REFERENCE_MAX_RELATIVE_KERNEL_ERROR = 1e-8  # Weiger onvoldoende opgelost anker.
+PHONON_SHIFT_GRID_STEP_CM1 = 5.0  # Modes must lie exactly on this lattice.
+PHONON_TAIL_TOLERANCE = 1e-35  # Upper bound on the missing total kernel mass.
+PHONON_MAX_EVENTS_PER_MODE = 256  # Safety limit; exceeding it is an error.
+REFERENCE_MAX_RELATIVE_KERNEL_ERROR = 1e-8  # Reject an insufficiently resolved anchor.
 
-# Wordt gevuld door set_phonon_model(); alle kernelfuncties lezen deze globals.
+# Filled by set_phonon_model(); all kernel functions read these globals.
 PHONON_ENERGIES_CM1 = DISCRETE_ENERGIES_CM1
 PHONON_MODE_FRACTIONS = DISCRETE_FRACTIONS
 PHONON_DESCRIPTION = ""
@@ -640,7 +647,7 @@ ESA_CHANNELS = {
 
 
 def channel_weight_report():
-    """Lijnsterktes en genormaliseerde kanaalaandelen per spectrum."""
+    """Line strengths and normalized channel shares per spectrum."""
     report = {}
     for spectrum, channels in (("GSA", GSA_CHANNELS), ("ESA", ESA_CHANNELS)):
         total = sum(w for _, _, w in channels.values())
@@ -653,7 +660,7 @@ def channel_weight_report():
 
 
 def band_nodes(band_min, band_max, band_step):
-    """Knopen w_k en trapeziumgewichten t_k voor de integraal over de band."""
+    """Nodes w_k and trapezoidal weights t_k for the integral over the band."""
     values = np.array([band_min, band_max, band_step], dtype=float)
     if not np.all(np.isfinite(values)) or not 0 < band_min < band_max or band_step <= 0:
         raise ValueError("Band needs finite 0 < min < max and a positive step.")
@@ -698,7 +705,7 @@ def _read_profile_file(path):
 
 
 def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=None):
-    """Genormaliseerde gewichten f_k (som = 1) van g(w) op de knopen."""
+    """Normalized weights f_k (sum = 1) of g(w) on the nodes."""
     if profile == "four_gaussian":
         centers = np.asarray(FOUR_GAUSSIAN_CENTERS_CM1, dtype=float)
         sigmas = np.asarray(FOUR_GAUSSIAN_SIGMAS_CM1, dtype=float)
@@ -707,8 +714,8 @@ def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=Non
                 or np.any(sigmas <= 0) or np.any(heights < 0) or not np.any(heights > 0)):
             raise ValueError("Four-Gaussian band: matching centers, positive sigmas, "
                              "nonnegative heights required.")
-        # Profiel R(w) = sum_k A_k exp(-(w-w_k)^2/(2 s_k^2)); trapeziumgewicht per knoop.
-        # De oppervlakte per component (A_k s_k) volgt hier vanzelf uit de kwadratuur.
+        # Profile R(w) = sum_k A_k exp(-(w-w_k)^2/(2 s_k^2)); trapezoidal weight per node.
+        # The area per component (A_k s_k) follows automatically from the quadrature.
         density = np.exp(-0.5 * ((nodes[:, None] - centers) / sigmas) ** 2) @ heights
         weights = density * trapezoid
     elif profile == "uniform":
@@ -723,7 +730,7 @@ def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=Non
             logw = _gaussian_log_weights(nodes, trapezoid, center, sigma_cm1)
             return _weighted_mean(nodes, np.exp(logw - logw.max()))
 
-        # mean_for is monotoon stijgend in het centrum: bisectie.
+        # mean_for increases monotonically with the centre: bisection.
         low, high = nodes[0] - 8 * sigma_cm1, nodes[-1] + 8 * sigma_cm1
         for _ in range(200):
             middle = 0.5 * (low + high)
@@ -749,21 +756,21 @@ def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=Non
 def set_phonon_model(model=PHONON_MODEL, band_min=BAND_MIN_CM1, band_max=BAND_MAX_CM1,
                      band_step=BAND_STEP_CM1, profile=BAND_PROFILE,
                      mean_cm1=BAND_MEAN_CM1, sigma_cm1=BAND_SIGMA_CM1, band_file=None):
-    """Stel PHONON_ENERGIES_CM1 / PHONON_MODE_FRACTIONS in (vervangt de vaste modi)."""
+    """Set PHONON_ENERGIES_CM1 / PHONON_MODE_FRACTIONS (replaces the fixed modes)."""
     global PHONON_ENERGIES_CM1, PHONON_MODE_FRACTIONS, PHONON_DESCRIPTION, PHONON_INFO
     if model == "discrete":
         energies = np.asarray(DISCRETE_ENERGIES_CM1, dtype=float)
         fractions = np.asarray(DISCRETE_FRACTIONS, dtype=float)
-        description = "discreet " + "/".join(f"{e:g}" for e in energies) + " cm⁻¹"
+        description = "discrete " + "/".join(f"{e:g}" for e in energies) + " cm⁻¹"
     elif model == "band":
         energies, trapezoid = band_nodes(band_min, band_max, band_step)
         fractions = band_fractions(energies, trapezoid, profile, mean_cm1,
                                    sigma_cm1, band_file)
-        keep = fractions > 0  # Knopen zonder gewicht dragen niets bij.
+        keep = fractions > 0  # Nodes without weight contribute nothing.
         energies, fractions = energies[keep], fractions[keep]
         fractions = fractions / fractions.sum()
         description = (f"band {band_min:g}-{band_max:g} cm⁻¹ ({profile}, "
-                       f"{len(energies)} knopen, gem. {_weighted_mean(energies, fractions):.1f} cm⁻¹)")
+                       f"{len(energies)} nodes, mean {_weighted_mean(energies, fractions):.1f} cm⁻¹)")
     else:
         raise ValueError("phonon model must be 'band' or 'discrete'.")
     PHONON_ENERGIES_CM1 = tuple(float(e) for e in energies)
@@ -791,7 +798,7 @@ def set_phonon_model(model=PHONON_MODEL, band_min=BAND_MIN_CM1, band_max=BAND_MA
     return PHONON_INFO
 
 
-set_phonon_model()  # Standaard: vier Gaussians (Wilhelm et al.), knopen 200-480 cm^-1 per 5 cm^-1.
+set_phonon_model()  # Default: four Gaussians (Wilhelm et al.), nodes 200-480 cm^-1 every 5 cm^-1.
 
 def phonon_occupation(energy_cm1, temperature_k):
     """Bose occupation; T=0 is supported for the phonon kernel itself."""
@@ -929,9 +936,9 @@ def merge_sticks(sticks, weights):
 class PhononSpectrum:
     """Peak-normalized spectrum with per-channel phonon coupling and width.
 
-    Naast het volledige spectrum (met fononzijbanden) wordt per kanaal ook de
-    nul-fonon-lijn (zuiver elektronische overgangen) bijgehouden, zodat die
-    met dezelfde normalisatie kan worden geplot (zie electronic_only).
+    Besides the full spectrum (with phonon sidebands), the zero-phonon line
+    (purely electronic transitions) is stored per channel, so that it can be
+    plotted with the same normalization (see electronic_only).
     """
     def __init__(self, channels, temperature_k=TEMPERATURE_K,
                  channel_couplings=None, channel_sigmas_cm1=None,
@@ -950,7 +957,7 @@ class PhononSpectrum:
                 or not np.isfinite(INSTRUMENT_SIGMA_CM1) or INSTRUMENT_SIGMA_CM1 < 0):
             raise ValueError("Invalid channel weights or instrument width.")
         self.prepared = {}
-        self.electronic = {}  # Nul-fonon-lijnen: (sticks, gewichten, sigma, kanaalgewicht)
+        self.electronic = {}  # Zero-phonon lines: (sticks, weights, sigma, channel weight)
         self.diagnostics = {}
         for name, (lower, upper, weight) in channels.items():
             if weight == 0:
@@ -978,8 +985,8 @@ class PhononSpectrum:
                 "net_zero_energy_shift_weight": float(kernel[shifts == 0].sum()),
                 "integrated_stick_weight": float(amplitudes.sum()),
             }
-            # Zuiver elektronische overgangen: de kale Stark-lijnen, geschaald met
-            # het gewicht van "geen enkel fononevent" in het volledige model.
+            # Purely electronic transitions: the bare Stark lines, scaled by the
+            # weight of "no phonon event at all" in the full model.
             gaps, line_weights = transition_sticks(lower, upper, temperature_k)
             e_sticks, e_weights = merge_sticks(gaps.ravel(), line_weights.ravel())
             self.electronic[name] = (e_sticks, no_event_weight * e_weights,
@@ -1001,7 +1008,7 @@ class PhononSpectrum:
         return result
 
     def raw_electronic(self, energy):
-        """Som van de nul-fonon-lijnen over alle kanalen (zelfde eenheid als raw_stark)."""
+        """Sum of the zero-phonon lines over all channels (same unit as raw_stark)."""
         result = np.zeros_like(np.asarray(energy, dtype=float))
         for sticks, weights, sigma, channel_weight in self.electronic.values():
             result += channel_weight * gaussian_density(energy, sticks, weights, sigma)
@@ -1018,8 +1025,8 @@ class PhononSpectrum:
         return float(result) if np.ndim(result) == 0 else result
 
     def electronic_only(self, wavelength_m):
-        """Zuiver elektronische bijdrage (zonder fononevents), met dezelfde
-        piek-normalisatie als factor(); som met de zijbanden = factor()."""
+        """Purely electronic contribution (no phonon events), with the same
+        peak normalization as factor(); adding the sidebands gives factor()."""
         wavelength = np.asarray(wavelength_m, dtype=float)
         if np.any(~np.isfinite(wavelength)) or np.any(wavelength <= 0):
             raise ValueError("Wavelength must be finite and positive.")
@@ -1142,7 +1149,7 @@ class StarkSpectrum:
         if np.any(~np.isfinite(wavelength)) or np.any(wavelength <= 0):
             raise ValueError("Wavelength must be finite and positive.")
         stark = self.raw_stark(1e-2/wavelength) / self.stark_norm
-        # Alleen lijnprofielen: geen additieve achtergrond of absorptievloer.
+        # Line profiles only: no additive background or absorption floor.
         return stark
 
     def factor(self, wavelength_m):
@@ -1151,7 +1158,7 @@ class StarkSpectrum:
 
 
 def _reference_error_bound(spectrum):
-    """Relatieve bovengrens op de 1064-nm-fout door weggelaten kernelmassa."""
+    """Relative upper bound on the 1064-nm error caused by omitted kernel mass."""
     raw_reference = float(spectrum.raw_stark(1e7 / REFERENCE_WAVELENGTH_NM))
     if not np.isfinite(raw_reference) or raw_reference <= 0:
         return float("inf")
@@ -1164,9 +1171,9 @@ def _reference_error_bound(spectrum):
 
 def _build_phonon_spectra():
     if (not np.isfinite(LORENTZ_HWHM_CM1) or LORENTZ_HWHM_CM1 != 0.0):
-        raise ValueError("phonon_band vereist LORENTZ_HWHM_CM1=0 (elektronische Gauss-kern).")
+        raise ValueError("phonon_band requires LORENTZ_HWHM_CM1=0 (electronic Gaussian kernel).")
     if GSA_BACKGROUND_WEIGHT != 0.0 or ESA_BACKGROUND_WEIGHT != 0.0:
-        raise ValueError("phonon_band gebruikt geen GSA/ESA-achtergrond.")
+        raise ValueError("phonon_band uses no GSA/ESA background.")
     # All five electronic channel widths follow STARK_SIGMA_CM1. The legacy
     # broad_gsa H5 width (300 cm^-1) must not broaden the phonon spectrum again.
     gsa = PhononSpectrum(GSA_CHANNELS, TEMPERATURE_K,
@@ -1182,13 +1189,13 @@ def _build_phonon_spectra():
         g_ref = gsa.factor(REFERENCE_WAVELENGTH_NM * 1e-9)
         e_ref = esa.factor(REFERENCE_WAVELENGTH_NM * 1e-9)
         if min(g_ref, e_ref) <= 0 or not np.all(np.isfinite([g_ref, e_ref])):
-            raise ValueError("Referentieabsorptie is nul/niet eindig; controleer fononkoppeling of anker.")
+            raise ValueError("Reference absorption is zero or non-finite; check the phonon coupling or anchor.")
         for label, spectrum in (("GSA", gsa), ("ESA", esa)):
             relative_bound = _reference_error_bound(spectrum)
             if relative_bound > REFERENCE_MAX_RELATIVE_KERNEL_ERROR:
                 raise ValueError(
-                    f"{label}: 1064-nm-anker onvoldoende opgelost (relatieve foutgrens "
-                    f"{relative_bound:.3g}); verlaag PHONON_TAIL_TOLERANCE of --kernel-tolerance.")
+                    f"{label}: 1064-nm anchor insufficiently resolved (relative error bound "
+                    f"{relative_bound:.3g}); lower PHONON_TAIL_TOLERANCE or --kernel-tolerance.")
             spectrum.reference_relative_kernel_error_bound = float(relative_bound)
     else:
         g_ref = e_ref = 1.0
@@ -1196,7 +1203,7 @@ def _build_phonon_spectra():
 
 
 def _build_spectra():
-    """Bouw GSA/ESA-spectra en referentiefactoren voor het actieve model."""
+    """Build the GSA/ESA spectra and reference factors for the active model."""
     if ABSORPTION_MODEL == "phonon_band":
         return _build_phonon_spectra()
     _require_pa_model()
@@ -1216,13 +1223,13 @@ def _build_spectra():
             raise ValueError("Reference absorption is too small to calibrate reliably. "
                              "Increase the GSA line width or revise the spectral model.")
     else:
-        g_ref = e_ref = 1.0   # geen anker: factoren worden niet gebruikt
+        g_ref = e_ref = 1.0   # no anchor: the factors are not used
     return gsa, esa, g_ref, e_ref
 
 
 if _USE_STARK:
     GSA_SPECTRUM, ESA_SPECTRUM, _GSA_REFERENCE_FACTOR, _ESA_REFERENCE_FACTOR = _build_spectra()
-else:   # "si_1064": geen Stark-spectra
+else:   # "si_1064": no Stark spectra
     GSA_SPECTRUM = ESA_SPECTRUM = None
     _GSA_REFERENCE_FACTOR = _ESA_REFERENCE_FACTOR = 1.0
 
@@ -1250,16 +1257,16 @@ def _stark_rate_coefficients(pump_wavelength_nm, p):
 
 def analytical_threshold_intensity(w_gsa, w_esa, w2, w3, s31, a32):
     """
-    Volledige lineaire-stabiliteitsdrempel I_th, inclusief GSA in de
-    Jacobiaan (niet alleen als infinitesimale seed). Volgt uit
-    det(J(I)) = 0 met R_gsa = w_gsa*I, R_esa = w_esa*I, wat kwadratisch
-    is in I:
+    Full linear-stability threshold I_th, including GSA in the
+    Jacobian (not only as an infinitesimal seed). Follows from
+    det(J(I)) = 0 with R_gsa = w_gsa*I, R_esa = w_esa*I, which is
+    quadratic in I:
         A*I^2 + B*I + C = 0
     A = w_esa*w_gsa
     B = w_gsa*(s31+w3) - w_esa*(a32+s31-w3)
     C = w2*(s31+w3)
-    Neemt de kleinste positieve wortel (eerste keer dat det(J) van
-    positief naar negatief gaat als I stijgt vanaf 0).
+    Takes the smallest positive root (the first time det(J) goes from
+    positive to negative as I increases from 0).
     """
     if w_esa <= 0:
         return float("inf")
@@ -1267,8 +1274,8 @@ def analytical_threshold_intensity(w_gsa, w_esa, w2, w3, s31, a32):
     C = w2 * (s31 + w3)
 
     if w_gsa <= 0:
-        # Lineair geval (A=0): terugvallen op de gecorrigeerde
-        # GSA-vrije formule (let op: a32 + s31 - w3, niet a32 + 2*s31).
+        # Linear case (A=0): fall back on the corrected GSA-free
+        # formula (note: a32 + s31 - w3, not a32 + 2*s31).
         denom = a32 + s31 - w3
         if denom <= 0:
             return float("inf")
@@ -1279,7 +1286,7 @@ def analytical_threshold_intensity(w_gsa, w_esa, w2, w3, s31, a32):
 
     disc = B * B - 4.0 * A * C
     if disc < 0:
-        return float("inf")  # geen reeel snijpunt: geen lineaire instabiliteit
+        return float("inf")  # no real crossing: no linear instability
 
     sqrt_disc = disc ** 0.5
     roots = [(-B - sqrt_disc) / (2.0 * A), (-B + sqrt_disc) / (2.0 * A)]
@@ -1531,7 +1538,7 @@ def check_thermal_population_coupling(p=None):
 
     If parameters p are supplied, also check the actual pa_model RHS and
     the SI cross sections. This does not integrate or alter any populations.
-    Alleen aanroepen in de "stark"- en "hybrid"-stand.
+    Called for every Stark-based model (phonon_band, stark, hybrid, broad_gsa).
     """
     def require_close(actual, expected, description):
         if not np.allclose(actual, expected, rtol=1e-12, atol=0.0):
@@ -1753,7 +1760,7 @@ def plot_wavelength_detuning(
 
     if savepath:
         fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figuur opgeslagen: {savepath}")
+        print(f"Figure saved: {savepath}")
 
 
 def plot_smax_vs_wavelength(
@@ -1773,7 +1780,7 @@ def plot_smax_vs_wavelength(
 
     if savepath:
         fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figuur opgeslagen: {savepath}")
+        print(f"Figure saved: {savepath}")
 
 
 def plot_ith_vs_wavelength(
@@ -1787,17 +1794,17 @@ def plot_ith_vs_wavelength(
 
     fig, ax = plt.subplots(figsize=(7.5, 4.8))
 
-    # Numerieke curve (via modelering en knie-detectie)
-    ax.plot(wavelengths, ith_num_values, "o-", linewidth=1.6, markersize=5, label=r"Numeriek ($I_{\mathrm{th}}^{*}$)")
+    # Numerical curve (from the simulation and knee detection)
+    ax.plot(wavelengths, ith_num_values, "o-", linewidth=1.6, markersize=5, label=r"Numerical ($I_{\mathrm{th}}^{*}$)")
 
-    # Analytische curve (vergelijking 5)
-    ax.plot(wavelengths, ith_ana_values, "s--", linewidth=1.6, markersize=5, label="Analytisch")
+    # Analytical curve (equation 5)
+    ax.plot(wavelengths, ith_ana_values, "s--", linewidth=1.6, markersize=5, label="Analytical")
 
     ax.set_xlabel("Pump wavelength (nm)")
     ax.set_ylabel(r"$I_{\mathrm{th}}$ (kW cm$^{-2}$)")
     ax.set_title(r"Photon-avalanche threshold $I_{\mathrm{th}}$ vs. pump wavelength")
 
-    # Logaritmische schaal om de grote variatie in analytische drempelwaarden te tonen
+    # Logarithmic scale to show the large variation in the analytical thresholds
     ax.set_yscale("log")
 
     ax.grid(alpha=0.3, which="both")
@@ -1807,7 +1814,7 @@ def plot_ith_vs_wavelength(
 
     if savepath:
         fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figuur opgeslagen: {savepath}")
+        print(f"Figure saved: {savepath}")
 
 
 # ---------------------------------------------------------------------------
@@ -1823,7 +1830,7 @@ def compute_detuning_curves(
 
     curves: Dict[float, Tuple[np.ndarray, np.ndarray]] = {}
     thresholds: Dict[float, float] = {}
-    analytical_thresholds: Dict[float, float] = {}  # TOEVOEGING: voor de analytische data
+    analytical_thresholds: Dict[float, float] = {}  # analytical threshold per wavelength
     fit_lines: Dict[float, Optional[Dict[str, float]]] = {}
 
     print(f"\n=== Wavelength-detuning demonstration (8% Tm sample, {label}) ===")
@@ -1862,8 +1869,8 @@ def compute_detuning_curves(
 
         for lam in wavelengths_nm:
 
-            # --- Analytische drempel: volledige kwadratische lineaire-
-            # stabiliteitsdrempel, inclusief GSA in de Jacobiaan ---
+            # --- Analytical threshold: full quadratic linear-stability
+            # threshold, including GSA in the Jacobian ---
             w_gsa, w_esa = pa_model.gsa_esa_rate_coefficients(lam, p8)
             a32 = p8.b32 * p8.w3_r + p8.w3_nr
 
@@ -1905,7 +1912,7 @@ def compute_detuning_curves(
     return curves, thresholds, analytical_thresholds, fit_lines
 
 # ---------------------------------------------------------------------------
-# Rise time (95%): piek zoeken op een adaptieve intensiteitsgrid
+# Rise time (95%): peak search on an adaptive intensity grid
 # ---------------------------------------------------------------------------
 
 RISE_FRACTION = 0.95
@@ -1914,24 +1921,24 @@ RISE_WAVELENGTHS_NM = [1060.0, 1064.0, 1070.0, 1080.0, 1410, 1430, 1450.0, 1470]
 RISE_SIGMA_VALUES_CM1 = [3.0, 5.0, 8.5, 12.0, 16.0, 24.0, 50, 100 ,150,200]
 RISE_SIGMA_WAVELENGTHS_NM = [1064.0, 1450.0]
 
-# Piekzoeker: grove log-grid + n_rounds keer verfijnen rond het maximum
-RISE_N_COARSE, RISE_N_REFINE, RISE_N_ROUNDS = 24, 13, 2          # hoofdplot
-RISE_N_COARSE_SWEEP, RISE_N_REFINE_SWEEP = 14, 9                 # sigma-sweep
+# Peak finder: coarse log grid + n_rounds refinements around the maximum
+RISE_N_COARSE, RISE_N_REFINE, RISE_N_ROUNDS = 24, 13, 2          # main plot
+RISE_N_COARSE_SWEEP, RISE_N_REFINE_SWEEP = 14, 9                 # sigma sweep
 
-RISE_YSCALE = "log"   # "linear" voor dezelfde stijl als pa_fig2b_rise_time_v2.png
+RISE_YSCALE = "log"   # "linear" for the same style as pa_fig2b_rise_time_v2.png
 RISE_XSCALE = "linear"
 
-# Bij SI_REFERENCE_ANCHOR ("hybrid" en "broad_gsa") ligt de absorptie bij 1064 nm vast,
-# onafhankelijk van sigma. Zet op False om de anker tijdens de sigma-sweep uit
-# te zetten.
+# With SI_REFERENCE_ANCHOR ("phonon_band", "hybrid" and "broad_gsa") the absorption
+# at 1064 nm is fixed, independent of sigma. Set to False to switch the anchor
+# off during the sigma sweep.
 RISE_SIGMA_KEEP_ANCHOR = True
 
 
 def rise_time_95_fast(I_pump, p, w_gsa, w_esa, fraction=RISE_FRACTION):
-    """Tijd (s) tot N2 (=800-nm emissie) `fraction` van stationair bereikt.
-    Eén integratie met dense_output; de 95%-doorgang wordt achteraf met brentq bepaald."""
+    """Time (s) until N2 (= 800-nm emission) reaches `fraction` of its steady state.
+    One integration with dense_output; the 95% crossing is found afterwards with brentq."""
     if not _HAVE_SCIPY:
-        raise RuntimeError("Rise time vereist scipy.")
+        raise RuntimeError("Rise time requires scipy.")
     I_pump = float(I_pump)
     rhs = _make_rhs(I_pump, p, w_gsa, w_esa)
     seed_scale = w_gsa * I_pump / max(p.w2 + p.w3, 1.0)
@@ -1988,8 +1995,8 @@ def _rise_ms(p8, w_gsa, w_esa, I_array):
 def rise_peak_scan(p8, wavelength_nm, I_min, I_max,
                    n_coarse=RISE_N_COARSE, n_refine=RISE_N_REFINE,
                    n_rounds=RISE_N_ROUNDS):
-    """Rise time (ms) vs intensiteit; zoekt de piek adaptief (actieve lineshape).
-    Geeft (I, rise_ms, index_van_piek) terug."""
+    """Rise time (ms) vs intensity; finds the peak adaptively (active line shape).
+    Returns (I, rise_ms, peak_index)."""
     w_gsa, w_esa = pa_model.gsa_esa_rate_coefficients(wavelength_nm, p8)
     I_all = np.logspace(np.log10(I_min), np.log10(I_max), n_coarse)
     rt_all = _rise_ms(p8, w_gsa, w_esa, I_all)
@@ -2009,11 +2016,11 @@ def rise_peak_scan(p8, wavelength_nm, I_min, I_max,
 
 @contextlib.contextmanager
 def _stark_sigma(sigma_cm1, keep_anchor=True):
-    """Tijdelijk STARK_SIGMA_CM1 wijzigen en spectra + referentiefactoren herbouwen.
-    In phonon_band volgen alle elektronische kanalen de nieuwe sigma.
-    De fononband en Huang-Rhys-factoren blijven dezelfde.
-    Voor alle Stark-modi. In broad_gsa blijft de H5-GSA sigma afzonderlijk
-    op GSA_H5_SIGMA_CM1 staan; alleen de overige Stark-kanalen veranderen."""
+    """Temporarily change STARK_SIGMA_CM1 and rebuild spectra + reference factors.
+    In phonon_band all electronic channels follow the new sigma.
+    The phonon band and Huang-Rhys factors stay the same.
+    For all Stark modes. In broad_gsa the H5 GSA sigma stays separately at
+    GSA_H5_SIGMA_CM1; only the other Stark channels change."""
     global STARK_SIGMA_CM1, GSA_SPECTRUM, ESA_SPECTRUM
     global _GSA_REFERENCE_FACTOR, _ESA_REFERENCE_FACTOR, SI_REFERENCE_ANCHOR
     old = (STARK_SIGMA_CM1, GSA_SPECTRUM, ESA_SPECTRUM,
@@ -2034,10 +2041,10 @@ def compute_rise_vs_intensity(p8, I_min, I_max, wavelengths_nm=RISE_WAVELENGTHS_
         for lam in wavelengths_nm:
             I_grid, rt, k = rise_peak_scan(p8, lam, I_min, I_max)
             if k is None:
-                print(f"  Rise time {lam:.0f} nm: geen geldige punten.")
+                print(f"  Rise time {lam:.0f} nm: no valid points.")
                 continue
-            edge = " (LET OP: piek aan de rand van het venster)" if k in (0, len(I_grid) - 1) else ""
-            print(f"  Rise time {lam:.0f} nm: piek {rt[k]:.2f} ms bij {I_grid[k]:.2f} kW/cm^2{edge}")
+            edge = " (NOTE: peak at the edge of the window)" if k in (0, len(I_grid) - 1) else ""
+            print(f"  Rise time {lam:.0f} nm: peak {rt[k]:.2f} ms at {I_grid[k]:.2f} kW/cm^2{edge}")
             results[lam] = (I_grid, rt, k)
     return results
 
@@ -2051,11 +2058,11 @@ def compute_rise_peak_vs_sigma(p8, wavelength_nm, sigmas, I_min, I_max):
                                            n_refine=RISE_N_REFINE_SWEEP)
             if k is None:
                 peaks.append(np.nan)
-                print(f"  {wavelength_nm:.0f} nm, sigma={s:g}: geen geldige punten")
+                print(f"  {wavelength_nm:.0f} nm, sigma={s:g}: no valid points")
                 continue
             peaks.append(float(rt[k]))
             print(f"  {wavelength_nm:.0f} nm, sigma={s:g} cm^-1: "
-                  f"piek {rt[k]:.2f} ms bij {I_grid[k]:.2f} kW/cm^2")
+                  f"peak {rt[k]:.2f} ms at {I_grid[k]:.2f} kW/cm^2")
     return np.array(peaks)
 
 
@@ -2076,7 +2083,7 @@ def plot_rise_vs_intensity(results, savepath=None):
     fig.tight_layout()
     if savepath:
         fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figuur opgeslagen: {savepath}")
+        print(f"Figure saved: {savepath}")
 
 
 def plot_rise_peak_vs_sigma(sigmas, peaks_by_wavelength, savepath=None):
@@ -2091,7 +2098,7 @@ def plot_rise_peak_vs_sigma(sigmas, peaks_by_wavelength, savepath=None):
     fig.tight_layout()
     if savepath:
         fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figuur opgeslagen: {savepath}")
+        print(f"Figure saved: {savepath}")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -2138,7 +2145,7 @@ def _save_factor_data(basename, wavelengths, f_gsa, f_esa):
     header = "wavelength_nm,f_gsa,f_esa"
     if ABSORPTION_MODEL == "phonon_band":
         data.extend(electronic_absorption_factors(wavelengths))
-        header += ",f_gsa_zonder_fononen,f_esa_zonder_fononen"
+        header += ",f_gsa_zero_phonon,f_esa_zero_phonon"
     np.savetxt(str(basename) + ".csv", np.column_stack(data), delimiter=",",
                comments="", header=header, fmt="%.12g")
 
@@ -2168,7 +2175,7 @@ def export_phonon_settings(save_dir):
     folder.mkdir(parents=True, exist_ok=True)
     energies = np.asarray(PHONON_ENERGIES_CM1)
     fractions = np.asarray(PHONON_MODE_FRACTIONS)
-    np.savetxt(folder / "fononband.csv", np.column_stack((
+    np.savetxt(folder / "phonon_band.csv", np.column_stack((
         energies, fractions, GSA_H5_HUANG_RHYS * fractions,
         GSA_F4_HUANG_RHYS * fractions, ESA_H4_HUANG_RHYS * fractions,
         ESA_F3_HUANG_RHYS * fractions, ESA_F2_HUANG_RHYS * fractions)),
@@ -2183,8 +2190,8 @@ def export_phonon_settings(save_dir):
         "judd_ofelt_enabled": USE_JUDD_OFELT_WEIGHTS,
         "judd_ofelt_omega_1e-20_cm2": JO_OMEGA_1E20_CM2.tolist(),
         "judd_ofelt_use_frequency_factor": JO_USE_FREQUENCY_FACTOR,
-        "judd_ofelt_sources": ["Lee et al. 2021, SI tabellen S4 en S5",
-                               "Carnall, Crosswhite & Crosswhite 1978, ANL-78-XX-95, appendix XIII tabel 2"],
+        "judd_ofelt_sources": ["Lee et al. 2021, SI Tables S4 and S5",
+                               "Carnall, Crosswhite & Crosswhite 1978, ANL-78-XX-95, Appendix XIII Table 2"],
         "reference_wavelength_nm": REFERENCE_WAVELENGTH_NM,
         "reference_anchor_enabled": SI_REFERENCE_ANCHOR,
         "reference_factors": [float(x) for x in
@@ -2196,18 +2203,25 @@ def export_phonon_settings(save_dir):
         "ESA": ESA_SPECTRUM.diagnostics,
         "factor_definition": "sigma(lambda)/sigma(1064 nm); applied once in pump rates",
         "electronic_components": "No phonon event; same full-spectrum normalization and anchor",
+        "plot_y_scales": ["linear", "log"],
         "assumptions": "Band shape (Raman proxy), Huang-Rhys factors, electronic widths and relative Stark line strengths are uncalibrated assumptions; channel weights follow Judd-Ofelt.",
         "sources_from_supplied_script": ["https://doi.org/10.7150/thno.5113",
                                         "https://doi.org/10.1016/j.omx.2021.100102",
                                         "https://doi.org/10.1080/0026897021000046889"],
     }
-    (folder / "fonon_instellingen.json").write_text(
+    (folder / "phonon_settings.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def plot_absorption_factors(p, save_dir, wavelength_min_nm=900.0,
                             wavelength_max_nm=1500.0, step_nm=0.05):
-    """Plot/export f_GSA and f_ESA without running population simulations."""
+    """Plot/export f_GSA and f_ESA without running population simulations.
+
+    Always saves the spectrum twice, with a linear and with a logarithmic
+    y-axis (<basename>_linear.png/.svg and <basename>_log.png/.svg). Both
+    figures show the same factors, which are written once to <basename>.csv.
+    Returns ([linear_fig, log_fig], wavelengths, f_gsa, f_esa).
+    """
     _require_matplotlib()
     if wavelength_max_nm <= wavelength_min_nm or step_nm <= 0:
         raise ValueError("Invalid wavelength range or step.")
@@ -2216,89 +2230,101 @@ def plot_absorption_factors(p, save_dir, wavelength_min_nm=900.0,
     f_gsa, f_esa = absorption_factors(wavelengths, p)
     if np.any(~np.isfinite(f_gsa)) or np.any(~np.isfinite(f_esa)):
         raise RuntimeError("Non-finite absorption factors.")
+    # Evaluate every curve once; both figures reuse the same data.
+    curves = [(f_gsa, "#ba4a18", "-", 2.1, r"$f_{\mathrm{gsa}}$"),
+              (f_esa, "#1468b1", "-", 2.1, r"$f_{\mathrm{esa}}$")]
+    if ABSORPTION_MODEL == "phonon_band":
+        g_el, e_el = electronic_absorption_factors(wavelengths)
+        curves += [(g_el, "#2e9e5b", "--", 1.3, "GSA, zero-phonon only"),
+                   (e_el, "#8a3ffc", "--", 1.3, "ESA, zero-phonon only")]
+    span = wavelength_max_nm - wavelength_min_nm
+    peak_value = float(max(f_gsa.max(), f_esa.max()))
+    positive = np.concatenate((f_gsa[f_gsa > 0], f_esa[f_esa > 0]))
 
+    if SI_REFERENCE_ANCHOR:
+        subtitle = (ABSORPTION_LABEL + r" | $f_i(\lambda)=\sigma_i(\lambda)/\sigma_i(1064\,\mathrm{nm})$"
+                    + f" | T = {TEMPERATURE_K:g} K")
+    else:
+        subtitle = f"{ABSORPTION_LABEL} | existing peak normalization | T = {TEMPERATURE_K:g} K"
+    footer = ("GSA and ESA background: off"
+              + f" | ESA sigma: {STARK_SIGMA_CM1:g} cm$^{{-1}}$"
+              + (f" | GSA H5 sigma: {GSA_H5_SIGMA_CM1:g} cm$^{{-1}}$"
+                 if ABSORPTION_MODEL == "broad_gsa" else ""))
+    if ABSORPTION_MODEL == "phonon_band":
+        footer = f"Phonon band: {PHONON_DESCRIPTION} | electronic sigma: {STARK_SIGMA_CM1:g} cm^-1"
+
+    os.makedirs(save_dir, exist_ok=True)
+    basename = os.path.join(save_dir,
+                           f"f_gsa_f_esa_{wavelength_min_nm:g}_{wavelength_max_nm:g}nm_{ABSORPTION_MODEL}")
+    figures = []
     with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
                          "axes.spines.top": False, "axes.spines.right": False,
                          "svg.fonttype": "none"}):
-        fig, ax = plt.subplots(figsize=(10.8, 6.4))
-        fig.subplots_adjust(left=0.11, right=0.97, bottom=0.17, top=0.81)
-        fig.suptitle("GSA- en ESA-versterkingsfactor", x=0.11, y=0.96,
-                     ha="left", fontsize=20, fontweight="bold")
-        if SI_REFERENCE_ANCHOR:
-            subtitle = (ABSORPTION_LABEL + r" | $f_i(\lambda)=\sigma_i(\lambda)/\sigma_i(1064\,\mathrm{nm})$"
-                        + f" | T = {TEMPERATURE_K:g} K")
-        else:
-            subtitle = f"{ABSORPTION_LABEL} | bestaande pieknormalisatie | T = {TEMPERATURE_K:g} K"
-        fig.text(0.11, 0.885, subtitle, fontsize=11, color="#526171")
+        for scale_name, log_y in (("linear", False), ("log", True)):
+            fig, ax = plt.subplots(figsize=(10.8, 6.4))
+            fig.subplots_adjust(left=0.11, right=0.97, bottom=0.17, top=0.81)
+            fig.suptitle(f"GSA and ESA absorption factors ({scale_name} y-axis)", x=0.11, y=0.96,
+                         ha="left", fontsize=20, fontweight="bold")
+            fig.text(0.11, 0.885, subtitle, fontsize=11, color="#526171")
 
-        ax.plot(wavelengths, np.where(f_gsa > 0, f_gsa, np.nan),
-                color="#ba4a18", linewidth=2.1, label=r"$f_{\mathrm{gsa}}$")
-        ax.plot(wavelengths, np.where(f_esa > 0, f_esa, np.nan),
-                color="#1468b1", linewidth=2.1, label=r"$f_{\mathrm{esa}}$")
-        if ABSORPTION_MODEL == "phonon_band":
-            g_el, e_el = electronic_absorption_factors(wavelengths)
-            ax.plot(wavelengths, np.where(g_el > 0, g_el, np.nan),
-                    color="#2e9e5b", linestyle="--", linewidth=1.3, label="GSA zonder fononevents")
-            ax.plot(wavelengths, np.where(e_el > 0, e_el, np.nan),
-                    color="#8a3ffc", linestyle="--", linewidth=1.3, label="ESA zonder fononevents")
-        ax.set_yscale("log")
-        ax.set_xlim(wavelength_min_nm, wavelength_max_nm)
-        tick_step = 50 if wavelength_max_nm-wavelength_min_nm >= 300 else 5
-        ax.set_xticks(np.arange(wavelength_min_nm, wavelength_max_nm+1, tick_step))
-        ax.set_xlabel("Pompgolflengte (nm)", labelpad=10)
-        ax.set_ylabel("Versterkingsfactor f (logaritmische schaal)", labelpad=10)
-        positive = np.concatenate((f_gsa[f_gsa > 0], f_esa[f_esa > 0]))
-        # Gaussstaarten kunnen onderlopen tot nul. Begrens alleen het zichtbare
-        # bereik; de berekende/exporteerde factoren worden niet afgeknipt.
-        lower = max(ABSORPTION_PLOT_MIN_FACTOR,
-                    10.0**np.floor(np.log10(positive.min())))
-        upper = max(lower*10.0, 10.0**np.ceil(np.log10(positive.max())))
-        ax.set_ylim(lower, upper)
-        ax.grid(axis="y", which="major", color="#dce3eb", linewidth=0.8)
-        ax.grid(axis="x", which="major", color="#eef1f5", linewidth=0.6)
-        ax.axvline(REFERENCE_WAVELENGTH_NM, color="#687684", linestyle="--",
-                   linewidth=1, zorder=1)
-        if SI_REFERENCE_ANCHOR:
-            ax.axhline(1.0, color="#9ba6b1", linestyle=":", linewidth=1)
-            ax.plot([REFERENCE_WAVELENGTH_NM], [1.0], "o", color="#465360", ms=5, zorder=5)
-            ax.annotate("1064 nm: beide f = 1", xy=(REFERENCE_WAVELENGTH_NM, 1),
-                        xytext=(wavelength_min_nm+0.03*(wavelength_max_nm-wavelength_min_nm),
-                                80 if wavelength_max_nm-wavelength_min_nm >= 300
-                                else max(f_gsa.max(), f_esa.max())*0.5),
-                        color="#465360", fontsize=10,
-                        arrowprops={"arrowstyle": "-", "color": "#687684"})
-        ax.legend(loc="upper right", frameon=False, fontsize=13)
-        if _USE_STARK and wavelength_min_nm < 1170 and wavelength_max_nm > 1290:
-            peak = int(np.argmax(f_gsa))
-            ax.annotate(r"GSA $^3H_6\rightarrow{}^3H_5$" + f"\npiek: {wavelengths[peak]:.1f} nm",
-                        xy=(wavelengths[peak], f_gsa[peak]), xytext=(1320, f_gsa[peak]*0.65),
-                        fontsize=10, color="#ba4a18",
-                        arrowprops={"arrowstyle": "-", "color": "#ba4a18"})
-        footer = ("GSA- en ESA-achtergrond: uit"
-                  + f" | ESA sigma: {STARK_SIGMA_CM1:g} cm$^{{-1}}$"
-                  + (f" | GSA H5 sigma: {GSA_H5_SIGMA_CM1:g} cm$^{{-1}}$"
-                     if ABSORPTION_MODEL == "broad_gsa" else ""))
-        if ABSORPTION_MODEL == "phonon_band":
-            footer = f"Fononband: {PHONON_DESCRIPTION} | elektronische sigma: {STARK_SIGMA_CM1:g} cm^-1"
-        fig.text(0.11, 0.035, footer, fontsize=9, color="#526171")
-
-        os.makedirs(save_dir, exist_ok=True)
-        basename = os.path.join(save_dir,
-                               f"f_gsa_f_esa_{wavelength_min_nm:g}_{wavelength_max_nm:g}nm_{ABSORPTION_MODEL}")
-        fig.savefig(basename + ".png", dpi=200, facecolor="white")
-        fig.savefig(basename + ".svg", facecolor="white")
-        _save_factor_data(basename, wavelengths, f_gsa, f_esa)
-        print("GSA and ESA backgrounds: removed.")
-        print(f"Factor plot and data saved: {basename}.png / .svg / .csv")
-    return fig, wavelengths, f_gsa, f_esa
+            for values, color, style, width, label in curves:
+                # Only the log axis needs zeros hidden; the linear axis shows them.
+                shown = np.where(values > 0, values, np.nan) if log_y else values
+                ax.plot(wavelengths, shown, color=color, linestyle=style,
+                        linewidth=width, label=label)
+            ax.set_yscale("log" if log_y else "linear")
+            ax.set_xlim(wavelength_min_nm, wavelength_max_nm)
+            tick_step = 50 if span >= 300 else 5
+            ax.set_xticks(np.arange(wavelength_min_nm, wavelength_max_nm+1, tick_step))
+            ax.set_xlabel("Pump wavelength (nm)", labelpad=10)
+            ax.set_ylabel("Relative absorption factor f" + (" (log scale)" if log_y else ""),
+                          labelpad=10)
+            if log_y:
+                # Gaussian tails can underflow to zero. Only the visible range is
+                # limited; the computed/exported factors are never clipped.
+                lower = max(ABSORPTION_PLOT_MIN_FACTOR,
+                            10.0**np.floor(np.log10(positive.min())))
+                upper = max(lower*10.0, 10.0**np.ceil(np.log10(positive.max())))
+            else:
+                # Upper limit follows the data: after the 1064-nm normalization
+                # the peaks can lie far above 1.
+                lower, upper = 0.0, 1.05*peak_value
+            ax.set_ylim(lower, upper)
+            ax.grid(axis="y", which="major", color="#dce3eb", linewidth=0.8)
+            ax.grid(axis="x", which="major", color="#eef1f5", linewidth=0.6)
+            ax.axvline(REFERENCE_WAVELENGTH_NM, color="#687684", linestyle="--",
+                       linewidth=1, zorder=1)
+            if SI_REFERENCE_ANCHOR:
+                ax.axhline(1.0, color="#9ba6b1", linestyle=":", linewidth=1)
+                ax.plot([REFERENCE_WAVELENGTH_NM], [1.0], "o", color="#465360", ms=5, zorder=5)
+                ax.annotate("1064 nm: both f = 1", xy=(REFERENCE_WAVELENGTH_NM, 1),
+                            xytext=(0.03, 0.80), textcoords="axes fraction",
+                            color="#465360", fontsize=10,
+                            arrowprops={"arrowstyle": "-", "color": "#687684"})
+            ax.legend(loc="upper right", frameon=False, fontsize=13)
+            if _USE_STARK and wavelength_min_nm < 1170 and wavelength_max_nm > 1290:
+                peak = int(np.argmax(f_gsa))
+                ax.annotate(r"GSA $^3H_6\rightarrow{}^3H_5$" + f"\npeak: {wavelengths[peak]:.1f} nm",
+                            xy=(wavelengths[peak], f_gsa[peak]), xytext=(1320, f_gsa[peak]*0.65),
+                            fontsize=10, color="#ba4a18",
+                            arrowprops={"arrowstyle": "-", "color": "#ba4a18"})
+            fig.text(0.11, 0.035, footer, fontsize=9, color="#526171")
+            fig.savefig(f"{basename}_{scale_name}.png", dpi=200, facecolor="white")
+            fig.savefig(f"{basename}_{scale_name}.svg", facecolor="white")
+            figures.append(fig)
+    _save_factor_data(basename, wavelengths, f_gsa, f_esa)
+    print("GSA and ESA backgrounds: removed.")
+    print(f"Factor plots saved: {basename}_linear.png/.svg and {basename}_log.png/.svg; "
+          f"data: {basename}.csv")
+    return figures, wavelengths, f_gsa, f_esa
 
 
 def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plots=None):
-    """plots: dict zoals PLOTS; None gebruikt de instelling bovenin het script."""
+    """plots: dict like PLOTS; None uses the setting at the top of the script."""
     plots = dict(PLOTS if plots is None else plots)
     unknown = set(plots) - set(PLOTS)
     if unknown:
-        raise ValueError(f"Onbekende plotnamen: {sorted(unknown)}; kies uit {sorted(PLOTS)}.")
+        raise ValueError(f"Unknown plot names: {sorted(unknown)}; choose from {sorted(PLOTS)}.")
     need_detuning = plots.get("detuning") or plots.get("smax") or plots.get("ith")
     need_kinetics = need_detuning or plots.get("rise") or plots.get("sigma")
     import time
@@ -2317,7 +2343,7 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
 
     if not (spectra_only or data_only):
         if not need_kinetics:
-            spectra_only = True  # Alleen spectra gevraagd: kinetiek overslaan.
+            spectra_only = True  # Only spectra requested: skip the kinetics.
     if not (spectra_only or data_only) or ABSORPTION_MODEL != "phonon_band":
         _require_pa_model()
     if not data_only:
@@ -2345,7 +2371,7 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
         return
 
     print(f"ABSORPTION_MODEL = {ABSORPTION_MODEL!r} ({ABSORPTION_LABEL})")
-    print("Onderdelen: " + ", ".join(f"{k}={'aan' if v else 'uit'}" for k, v in plots.items()))
+    print("Parts: " + ", ".join(f"{k}={'on' if v else 'off'}" for k, v in plots.items()))
     if _USE_STARK:
         thermal_checks = check_thermal_population_coupling(p8)
         print(f"Host: {HOST_MATERIAL}; T = {TEMPERATURE_K:g} K; "
@@ -2357,11 +2383,11 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
             print(f"SI anchor: sigma_GSA = {thermal_checks['sigma_gsa_1064_m2']:.3e} m^2, "
                   f"sigma_ESA = {thermal_checks['sigma_esa_1064_m2']:.3e} m^2.")
         else:
-            print("Geen SI-anker en geen brede achtergrond: pure Stark-absorptie.")
+            print("No SI anchor and no broad background: pure Stark absorption.")
     else:
-        print("Absorptiemodel: piekgenormeerde Gaussian met SI-amplitudes "
+        print("Absorption model: peak-normalized Gaussian with SI amplitudes "
               f"(sigma_GSA = {p8.sigma_gsa_m2:.3e} m^2, "
-              f"sigma_ESA = {p8.sigma_esa_m2:.3e} m^2); geen Stark-structuur.")
+              f"sigma_ESA = {p8.sigma_esa_m2:.3e} m^2); no Stark structure.")
 
     wavelengths_nm = [
         1055,
@@ -2377,16 +2403,16 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
               "slopes can reflect an underestimated phonon-assisted GSA.")
 
     # ---------------------------------------------------------------
-    # MAP INSTELLEN
+    # OUTPUT FOLDER
     # ---------------------------------------------------------------
     os.makedirs(save_dir, exist_ok=True)
-    print(f"\nAlle grafieken worden opgeslagen in: {save_dir}\n")
+    print(f"\nAll figures are saved in: {save_dir}\n")
 
-    # Bestandsnaam-suffix zodat de drie modellen elkaar niet overschrijven
+    # File-name suffix so that the absorption models do not overwrite each other
     sfx = f"_{ABSORPTION_MODEL}"
 
     # ---------------------------------------------------------------
-    # Detuning-curves voor het gekozen absorptiemodel
+    # Detuning curves for the chosen absorption model
     # ---------------------------------------------------------------
 
     if need_detuning:
@@ -2426,12 +2452,12 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
         if plots.get("ith"):
             plot_ith_vs_wavelength(
                 stark_thresholds,
-                stark_ana_thresholds,  # Geef nu ook de analytische drempelwaarden mee
+                stark_ana_thresholds,  # also pass the analytical thresholds
                 savepath=os.path.join(save_dir, f"pa_ith_vs_wavelength{sfx}.pdf")
             )
         _done("detuning/smax/ith", t0)
     else:
-        print("\nDetuning-scan overgeslagen (detuning, smax en ith staan uit).")
+        print("\nDetuning scan skipped (detuning, smax and ith are off).")
 
     # ---------------------------------------------------------------
     # Rise-time plots
@@ -2440,7 +2466,7 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
 
     if plots.get("rise"):
         t0 = time.perf_counter()
-        print("\n=== Rise time vs intensiteit ===")
+        print("\n=== Rise time vs intensity ===")
         rise_results = compute_rise_vs_intensity(p8, I_min, I_max)
         if rise_results:
             plot_rise_vs_intensity(
@@ -2448,17 +2474,17 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
                 savepath=os.path.join(save_dir, f"pa_rise_time_vs_intensity{sfx}.pdf")
             )
         else:
-            print("  Geen geldige rise-time data: plot overgeslagen.")
+            print("  No valid rise-time data: plot skipped.")
         _done("rise", t0)
     else:
-        print("\nRise-time-scan overgeslagen (rise staat uit).")
+        print("\nRise-time scan skipped (rise is off).")
 
-    # De sigma-sweep bestaat alleen als er Stark-spectra zijn
+    # The sigma sweep only exists when there are Stark spectra
     if not plots.get("sigma"):
-        print("\nSigma-sweep overgeslagen (sigma staat uit).")
+        print("\nSigma sweep skipped (sigma is off).")
     elif _USE_STARK:
         t0 = time.perf_counter()
-        print("\n=== Piek rise time vs Stark sigma ===")
+        print("\n=== Peak rise time vs Stark sigma ===")
         peaks_by_wl = {
             lam: compute_rise_peak_vs_sigma(p8, lam, RISE_SIGMA_VALUES_CM1, I_min, I_max)
             for lam in RISE_SIGMA_WAVELENGTHS_NM
@@ -2469,9 +2495,9 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
         )
         _done("sigma", t0)
     else:
-        print("\nSigma-sweep overgeslagen (alleen zinvol met Stark-spectra).")
+        print("\nSigma sweep skipped (only meaningful with Stark spectra).")
 
-    print(f"\nTotale rekentijd: {time.perf_counter() - t_start:.1f} s")
+    print(f"\nTotal run time: {time.perf_counter() - t_start:.1f} s")
 
     # Display all figures together.
     # block=False prevents Spyder from remaining busy until the plot windows
@@ -2488,7 +2514,7 @@ if __name__ == "__main__":
     import sys
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="GSA/ESA fononfactoren in het PA-model")
+    parser = argparse.ArgumentParser(description="GSA/ESA phonon factors in the PA model")
     parser.add_argument("--spectra-only", action="store_true",
                         help="Export factor plots and data; skip kinetics.")
     parser.add_argument("--data-only", action="store_true",
@@ -2511,10 +2537,10 @@ if __name__ == "__main__":
     parser.add_argument("--coupling-f2", type=float, default=ESA_F2_HUANG_RHYS)
     parser.add_argument("--kernel-tolerance", type=float, default=PHONON_TAIL_TOLERANCE)
     plot_choice = parser.add_mutually_exclusive_group()
-    plot_choice.add_argument("--plots", nargs="+", choices=tuple(PLOTS), metavar="NAAM",
-                             help="Maak alleen deze onderdelen: " + ", ".join(PLOTS) + ".")
-    plot_choice.add_argument("--skip-plots", nargs="+", choices=tuple(PLOTS), metavar="NAAM",
-                             help="Sla deze onderdelen over; de rest volgt PLOTS bovenin.")
+    plot_choice.add_argument("--plots", nargs="+", choices=tuple(PLOTS), metavar="NAME",
+                             help="Make only these parts: " + ", ".join(PLOTS) + ".")
+    plot_choice.add_argument("--skip-plots", nargs="+", choices=tuple(PLOTS), metavar="NAME",
+                             help="Skip these parts; the rest follows PLOTS at the top.")
     args = parser.parse_args()
     if args.plots is not None:
         selected_plots = {name: name in args.plots for name in PLOTS}
@@ -2531,9 +2557,9 @@ if __name__ == "__main__":
         set_phonon_model(args.phonon_model, args.band_min, args.band_max,
                          args.band_step, profile, args.band_mean, args.band_sigma, args.band_file)
         GSA_SPECTRUM, ESA_SPECTRUM, _GSA_REFERENCE_FACTOR, _ESA_REFERENCE_FACTOR = _build_spectra()
-        print(f"Fononen: {PHONON_DESCRIPTION}")
+        print(f"Phonons: {PHONON_DESCRIPTION}")
         for _name, _info in channel_weight_report().items():
             print(f"{_name}: S = {_info['line_strength_1e-20_cm2']:.4f} e-20 cm2, "
-                  f"aandeel in {_info['spectrum']} = {_info['share_in_spectrum']:.3f}")
+                  f"share in {_info['spectrum']} = {_info['share_in_spectrum']:.3f}")
     main(spectra_only=args.spectra_only, save_dir=args.output_dir,
          data_only=args.data_only, no_show=args.no_show, plots=selected_plots)
