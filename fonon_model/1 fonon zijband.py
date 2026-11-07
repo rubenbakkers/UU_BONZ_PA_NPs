@@ -9,9 +9,28 @@ Each spectrum is normalized so that f(1064 nm) = 1 for both GSA and ESA
 (see NORMALIZATION_WAVELENGTH_NM).
 Plots show these factors directly, without equalizing local peak heights;
 the spectrum is always saved twice, with a linear and with a logarithmic y-axis.
-The electronic Stark levels follow the supplied electronic script.
-All electronic widths are 8.5 cm^-1; the effective H5 width of 300 cm^-1
-is replaced by explicit phonon sidebands, not applied a second time.
+The electronic Stark levels start from the ab initio values of Table 4(B) in
+J. Phys. Chem. C 129, 20446 (2025) ("Physical Chemistry.pdf").
+The effective H5 width of 300 cm^-1 is replaced by explicit phonon sidebands,
+not applied a second time.
+
+ABSORPTION CALIBRATION (default; switch off with --original-model or
+USE_ABSORPTION_CALIBRATION = False to get the previous model back exactly):
+a room-temperature absorption spectrum of NaTmF4@NaYF4 in cyclohexane (Lambda 950)
+was fitted with this model's own Stark lines and phonon kernel
+(calibrate_from_absorption.py; numbers in ABSORPTION_CALIBRATION below):
+  * electronic width sigma 8.5 -> 26.8 cm^-1 (3H6 -> 3H5 band; also used for ESA),
+  * Huang-Rhys coupling 0.05 -> 0.12 (blue one-phonon wing of 3H5, 1115-1165 nm),
+  * Stark manifolds stretched/shifted so that every GSA band matches the measured
+    band (3F4 stretched about its lowest level, which stays at 5634 cm^-1);
+    the ab initio levels carry errors of this size (the same paper finds an RMSE of
+    64 cm^-1 against experiment for LiYF4:Tm, growing with energy, and notes that no
+    experimental Stark levels exist for beta-NaYF4),
+  * magnetic-dipole line strengths added to the Judd-Ofelt weights
+    (3H6 -> 3H5, 3F4 -> 3H4, 3F4 -> 3F3).
+The ESA is not measured: it follows from the calibrated levels and widths.
+In the cyclohexane spectrum the C-H overtone 2nu(CH2) makes the cuvette opaque
+at 1716-1772 nm, so that part of the 3F4 band is excluded from the fit.
 
 CHANNEL WEIGHTS (new): the relative strength of each electronic channel is no
 longer 1.0 but follows from Judd-Ofelt theory, with Omega_t (Table S4) and the
@@ -34,6 +53,7 @@ Usage (NumPy; Matplotlib only for plots):
     python gsa_esa_four_gaussian_multiphonon.py --max-phonons 1 --no-show
     python gsa_esa_four_gaussian_multiphonon.py --phonon-bands 1 3 --no-show
     python gsa_esa_four_gaussian_multiphonon.py --no-phonons --no-show
+    python gsa_esa_four_gaussian_multiphonon.py --original-model --no-show   # uncalibrated model
 """
 
 from __future__ import annotations
@@ -55,6 +75,7 @@ PHONON_SIGMAS_CM1 = np.array([14.0, 24.0, 15.0, 24.0])
 PHONON_PEAK_HEIGHTS = np.array([0.68, 0.95, 0.66, 0.36])
 PHONON_BANDS_ENABLED = np.array([True, True, True, True])
 TEMPERATURE_K = 300.0
+# Original-model width and coupling; the calibrated model uses ABSORPTION_CALIBRATION below.
 ELECTRONIC_SIGMA_CM1 = 8.5
 DEFAULT_COUPLING = 0.05
 DEFAULT_MAX_PHONONS = 6  # Any integer >= 1; includes all lower orders.
@@ -72,13 +93,70 @@ WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, WAVELENGTH_STEP_NM = 900.0, 2000.0, 0.05
 K_B_CM1_PER_K = 0.6950348005
 PLOT_MIN_FACTOR = 1e-20  # Plot limit only; never added to the data.
 
-# Stark levels [cm^-1], unchanged from the supplied script.
-E_3H6_CM1 = np.array([0, 9, 54, 80, 122, 149, 187, 223, 246, 296, 314, 405, 417], dtype=float)
-E_3F4_CM1 = np.array([5634, 5661, 5689, 5717, 5730, 5750, 5761, 5782, 5823], dtype=float)
-E_3H5_CM1 = np.array([8207, 8218, 8267, 8288, 8317, 8348, 8377, 8428, 8440, 8528, 8539], dtype=float)
-E_3H4_CM1 = np.array([12546, 12566, 12588, 12613, 12642, 12673, 12721, 12766, 12776], dtype=float)
-E_3F3_CM1 = np.array([14279, 14317, 14341, 14361, 14380, 14398, 14420], dtype=float)
-E_3F2_CM1 = np.array([14936, 14951, 15018, 15061, 15084], dtype=float)
+# Stark levels [cm^-1]: ab initio values, Table 4(B) of J. Phys. Chem. C 129, 20446 (2025),
+# unchanged from the supplied script. The calibrated levels are derived from these below.
+STARK_LEVELS_TABLE4_CM1 = {
+    "3H6": np.array([0, 9, 54, 80, 122, 149, 187, 223, 246, 296, 314, 405, 417], dtype=float),
+    "3F4": np.array([5634, 5661, 5689, 5717, 5730, 5750, 5761, 5782, 5823], dtype=float),
+    "3H5": np.array([8207, 8218, 8267, 8288, 8317, 8348, 8377, 8428, 8440, 8528, 8539], dtype=float),
+    "3H4": np.array([12546, 12566, 12588, 12613, 12642, 12673, 12721, 12766, 12776], dtype=float),
+    "3F3": np.array([14279, 14317, 14341, 14361, 14380, 14398, 14420], dtype=float),
+    "3F2": np.array([14936, 14951, 15018, 15061, 15084], dtype=float),
+}
+
+# ---------------------------------------------------------------------------
+# Absorption calibration (RT absorption of NaTmF4@NaYF4 in cyclohexane, 300-2000 nm)
+# ---------------------------------------------------------------------------
+# True: calibrated model (default). False, or --original-model on the command line:
+# the previous model, reproduced exactly (sigma 8.5, coupling 0.05, Table 4 levels, ED only).
+USE_ABSORPTION_CALIBRATION = True
+ABSORPTION_CALIBRATION = {
+    # Gaussian sigma of every electronic (zero-phonon) line, from the 3H6 -> 3H5 band
+    # fit (1110-1300 nm). The GSA lines are about three times broader than 8.5 cm^-1.
+    "electronic_sigma_gsa_cm1": 26.8,
+    # Not measured: taken equal to the GSA width (ESA connects the same broadened levels).
+    "electronic_sigma_esa_cm1": 26.8,
+    # Huang-Rhys coupling of all channels, from the blue (one-phonon) wing of 3H5 at
+    # 1115-1165 nm: coupling 0.05 gives only 0.42 of the measured wing. A wider 3H5
+    # manifold cannot replace it (the band core wants a narrower one); with that freedom
+    # the fit gives 0.15, so 0.12 is the lower end.
+    "coupling": 0.12,
+    # Stark corrections E_new = E_min + shift + stretch * (E - E_min), E_min = lowest
+    # Table 4 level. Each from a fit of that multiplet's GSA band at the sigma and
+    # coupling above. 3F4: lowest level kept (1.8-um emission level, start of the ESA).
+    # 3F2 is the least certain (weak band on the 3F3 sideband): +66 +- 20 cm^-1, and
+    # +26 / +88 cm^-1 for coupling 0.05 / 0.15.
+    "stark_corrections": {
+        "3F4": {"stretch": 2.34, "shift_cm1": 0.0},     # 5634-6076 cm^-1 (Table 4: 5634-5823)
+        "3H5": {"stretch": 1.0, "shift_cm1": -21.3},    # 8186-8518 cm^-1
+        "3H4": {"stretch": 1.60, "shift_cm1": -23.1},   # 12523-12891 cm^-1
+        "3F3": {"stretch": 1.63, "shift_cm1": 97.5},    # 14377-14607 cm^-1
+        "3F2": {"stretch": 1.0, "shift_cm1": 65.7},     # 15002-15150 cm^-1
+    },
+    # Add magnetic-dipole line strengths to the Judd-Ofelt (electric-dipole) weights.
+    "magnetic_dipole": True,
+    "refractive_index": 1.48,  # NaYF4; the MD/ED local-field ratio 9n^2/(n^2+2)^2 barely depends on n
+    "source": "calibrate_from_absorption.py on NaTmF4@NaYF4 in cyclohexane (Lambda 950, 300-2000 nm, 2026)",
+}
+
+
+def corrected_levels(name, calibrated):
+    """Table 4 Stark levels, optionally with the absorption calibration applied."""
+    levels = STARK_LEVELS_TABLE4_CM1[name]
+    correction = ABSORPTION_CALIBRATION["stark_corrections"].get(name) if calibrated else None
+    if not correction:
+        return levels.copy()
+    lowest = levels.min()
+    return lowest + correction["shift_cm1"] + correction["stretch"] * (levels - lowest)
+
+
+# Active Stark levels (module defaults; main() rebuilds them for --original-model).
+E_3H6_CM1 = corrected_levels("3H6", USE_ABSORPTION_CALIBRATION)
+E_3F4_CM1 = corrected_levels("3F4", USE_ABSORPTION_CALIBRATION)
+E_3H5_CM1 = corrected_levels("3H5", USE_ABSORPTION_CALIBRATION)
+E_3H4_CM1 = corrected_levels("3H4", USE_ABSORPTION_CALIBRATION)
+E_3F3_CM1 = corrected_levels("3F3", USE_ABSORPTION_CALIBRATION)
+E_3F2_CM1 = corrected_levels("3F2", USE_ABSORPTION_CALIBRATION)
 
 # ---------------------------------------------------------------------------
 # Judd-Ofelt channel weights (Lee et al. 2021, Supplementary Information)
@@ -101,9 +179,32 @@ USER_LINE_STRENGTH_OVERRIDE: dict = {}
 JO_PLACEHOLDER_REFERENCE = "3F4 -> 3H4"  # used for channels without matrix elements
 JO_USE_FREQUENCY_FACTOR = True  # weight = S * nu_bar (sigma_int ~ nu * S); False: weight = S
 
+# Magnetic dipole (used when ABSORPTION_CALIBRATION["magnetic_dipole"] is on).
+# |<psi J||L+2S||psi' J'>|^2 in intermediate coupling for Tm3+ (4f12). Eigenvectors from a
+# free-ion fit (F2, F4, F6, zeta, alpha) to the Tm3+:LaF3 barycentres of Carnall et al. 1978
+# (Appendix XIII Table 1); the same eigenvectors reproduce Carnall's [U(t)]^2 of all five
+# channels to within 7 % (every element above 0.01; 3H6 -> 3H5 exactly). Pure LS limit for
+# 3H6 -> 3H5: 10.83. Delta J = 2 channels (3H6 -> 3F4, 3F4 -> 3F2) have no MD part.
+MD_REDUCED_MATRIX_ELEMENTS_SQ = {
+    "3H6 -> 3H5": 10.74,
+    "3F4 -> 3H4": 3.81,
+    "3F4 -> 3F3": 4.33,
+}
+MD_PREFACTOR_1E20_CM2 = 0.03728  # (hbar/2mc)^2 = (mu_B/e)^2 = 3.728e-22 cm^2, in 1e-20 cm^2
+
+
+def md_line_strength(name, refractive_index=None):
+    """MD line strength in ED-equivalent units (1e-20 cm^2), ready to add to S_ED.
+
+    Absorption: f_ED ~ (n^2+2)^2/(9n) S_ED and f_MD ~ n S'_MD, so S_MD,eff = 9n^2/(n^2+2)^2 S'_MD.
+    """
+    n = ABSORPTION_CALIBRATION["refractive_index"] if refractive_index is None else refractive_index
+    s_md = MD_PREFACTOR_1E20_CM2 * MD_REDUCED_MATRIX_ELEMENTS_SQ.get(name, 0.0)
+    return 9 * n**2 / (n**2 + 2) ** 2 * s_md
+
 
 def line_strength(name):
-    """Return (S in 1e-20 cm^2, is_placeholder)."""
+    """Return (electric-dipole S in 1e-20 cm^2, is_placeholder)."""
     if name in USER_LINE_STRENGTH_OVERRIDE:
         return float(USER_LINE_STRENGTH_OVERRIDE[name]), False
     table = {**JO_REDUCED_MATRIX_ELEMENTS, **USER_REDUCED_MATRIX_ELEMENTS}
@@ -116,28 +217,48 @@ def line_strength(name):
     return float(JO_OMEGA_1E20_CM2 @ np.asarray(table[JO_PLACEHOLDER_REFERENCE], dtype=float)), True
 
 
-def channel_weight(name, lower, upper):
-    """Relative channel weight (arbitrary scale; normalized per spectrum later)."""
+def channel_weight(name, lower, upper, include_md=False):
+    """Relative channel weight (arbitrary scale; normalized per spectrum later).
+
+    A USER_LINE_STRENGTH_OVERRIDE entry is taken as the total strength (no MD added).
+    """
     strength, _ = line_strength(name)
+    if include_md and name not in USER_LINE_STRENGTH_OVERRIDE:
+        strength += md_line_strength(name)
     if JO_USE_FREQUENCY_FACTOR:
         strength *= float(np.mean(upper) - np.mean(lower))
     return strength
 
 
-def build_channels(spec):
-    return {name: (lower, upper, channel_weight(name, lower, upper))
+def build_channels(spec, include_md=False):
+    return {name: (lower, upper, channel_weight(name, lower, upper, include_md))
             for name, (lower, upper) in spec.items()}
 
 
-GSA_CHANNELS = build_channels({
-    "3H6 -> 3F4": (E_3H6_CM1, E_3F4_CM1),
-    "3H6 -> 3H5": (E_3H6_CM1, E_3H5_CM1),
-})
-ESA_CHANNELS = build_channels({
-    "3F4 -> 3H4": (E_3F4_CM1, E_3H4_CM1),
-    "3F4 -> 3F3": (E_3F4_CM1, E_3F3_CM1),
-    "3F4 -> 3F2": (E_3F4_CM1, E_3F2_CM1),
-})
+def model_configuration(calibrated=USE_ABSORPTION_CALIBRATION):
+    """Levels, channels, widths and coupling of the calibrated or the original model."""
+    cal = ABSORPTION_CALIBRATION
+    levels = {name: corrected_levels(name, calibrated) for name in STARK_LEVELS_TABLE4_CM1}
+    include_md = bool(calibrated and cal["magnetic_dipole"])
+    h6, f4 = levels["3H6"], levels["3F4"]
+    return {
+        "calibrated": bool(calibrated),
+        "levels": levels,
+        "include_magnetic_dipole": include_md,
+        "gsa_channels": build_channels({"3H6 -> 3F4": (h6, f4), "3H6 -> 3H5": (h6, levels["3H5"])},
+                                       include_md),
+        "esa_channels": build_channels({"3F4 -> 3H4": (f4, levels["3H4"]),
+                                        "3F4 -> 3F3": (f4, levels["3F3"]),
+                                        "3F4 -> 3F2": (f4, levels["3F2"])}, include_md),
+        "electronic_sigma_gsa_cm1": cal["electronic_sigma_gsa_cm1"] if calibrated else ELECTRONIC_SIGMA_CM1,
+        "electronic_sigma_esa_cm1": cal["electronic_sigma_esa_cm1"] if calibrated else ELECTRONIC_SIGMA_CM1,
+        "coupling": cal["coupling"] if calibrated else DEFAULT_COUPLING,
+    }
+
+
+_DEFAULT_CONFIGURATION = model_configuration(USE_ABSORPTION_CALIBRATION)
+GSA_CHANNELS = _DEFAULT_CONFIGURATION["gsa_channels"]
+ESA_CHANNELS = _DEFAULT_CONFIGURATION["esa_channels"]
 
 
 def validate_phonons():
@@ -384,9 +505,20 @@ class MultiPhononSpectrum:
     The spectrum is normalized so that factor(NORMALIZATION_WAVELENGTH_NM) = 1.
     """
 
-    def __init__(self, channels, coupling=DEFAULT_COUPLING, temperature_k=TEMPERATURE_K,
+    def __init__(self, channels, coupling=None, temperature_k=TEMPERATURE_K,
                  enabled_bands=None, max_phonons=DEFAULT_MAX_PHONONS,
-                 sum_tolerance=GAUSSIAN_RELATIVE_TOLERANCE):
+                 sum_tolerance=GAUSSIAN_RELATIVE_TOLERANCE, electronic_sigma_cm1=None,
+                 coupling_multipliers=None):
+        # Defaults follow the module configuration (calibrated unless switched off).
+        if coupling is None:
+            coupling = _DEFAULT_CONFIGURATION["coupling"]
+        if electronic_sigma_cm1 is None:
+            electronic_sigma_cm1 = _DEFAULT_CONFIGURATION["electronic_sigma_gsa_cm1"]
+        if not np.isfinite(electronic_sigma_cm1) or electronic_sigma_cm1 <= 0:
+            raise ValueError("Electronic Gaussian sigma must be positive and finite.")
+        multipliers = CHANNEL_COUPLING_MULTIPLIERS if coupling_multipliers is None else coupling_multipliers
+        self.electronic_sigma_cm1 = float(electronic_sigma_cm1)
+        self.coupling = float(coupling)
         self.enabled_bands = band_mask(enabled_bands)
         validate_max_phonons(max_phonons)
         validate_sum_tolerance(sum_tolerance)
@@ -402,7 +534,7 @@ class MultiPhononSpectrum:
                 or channel_weights.sum() <= 0):
             raise ValueError("Channel weights must be finite, nonnegative and nonzero in total.")
         for name, (lower, upper, weight) in channels.items():
-            multiplier = CHANNEL_COUPLING_MULTIPLIERS[name]
+            multiplier = multipliers[name]
             kernel, diagnostics = _cached_channel_kernel(
                 coupling * multiplier, temperature_k, tuple(self.enabled_bands), max_phonons,
                 tuple(PHONON_CENTERS_CM1), tuple(PHONON_SIGMAS_CM1), tuple(PHONON_PEAK_HEIGHTS))
@@ -413,7 +545,7 @@ class MultiPhononSpectrum:
             centers, strengths = transition_sticks(lower, upper, temperature_k)
             strengths = strengths * weight / channel_weights.sum()
             for term in kernel:
-                sigma = math.sqrt(ELECTRONIC_SIGMA_CM1**2 + term["variance_cm2"])
+                sigma = math.sqrt(self.electronic_sigma_cm1**2 + term["variance_cm2"])
                 # In absorption, creation needs MORE photon energy; consumption LESS.
                 self.components.append((centers + term["shift_cm1"],
                                         strengths * term["probability"], sigma,
@@ -454,11 +586,12 @@ def export_profile(output_dir, enabled_bands=None):
 
 
 def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="global",
-                 full_factors=None):
+                 full_factors=None, variant_label=""):
     """Plot the model factors directly, with one constant scale per spectrum.
 
     Always saves two spectrum figures: one with a linear and one with a log y-axis.
     """
+    suffix_label = f", {variant_label}" if variant_label else ""
     if normalization != "global":
         raise ValueError("Only global normalization is supported; local peak equalization was removed.")
     import matplotlib.pyplot as plt
@@ -486,7 +619,7 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="glob
             ax.set(xlabel="Pump wavelength (nm)", ylabel="Relative absorption factor f",
                    xlim=(wavelengths[0], wavelengths[-1]),
                    yscale="log" if log_y else "linear",
-                   title=f"GSA and ESA factors ({scale_name} y-axis)")
+                   title=f"GSA and ESA factors ({scale_name} y-axis{suffix_label})")
             peak = max(float(np.nanmax(c[0])) for c in curves)
             # Top is set explicitly: a log axis otherwise pads symmetrically in decades.
             ax.set_ylim(PLOT_MIN_FACTOR, 10*peak) if log_y else ax.set_ylim(0.0, 1.05*peak)
@@ -520,15 +653,21 @@ def plot_results(output_dir, wavelengths, gsa, esa, profile, normalization="glob
         return (*spectrum_figs, profile_fig)
 
 
-def channel_weight_report():
-    """Judd-Ofelt line strengths and (un-normalized) weights per channel, for the JSON/log."""
+def channel_weight_report(configuration=None):
+    """Judd-Ofelt (+ MD) line strengths and (un-normalized) weights per channel, for the JSON/log."""
+    configuration = _DEFAULT_CONFIGURATION if configuration is None else configuration
+    include_md = configuration["include_magnetic_dipole"]
     report = {}
-    for spectrum_name, channels in (("gsa", GSA_CHANNELS), ("esa", ESA_CHANNELS)):
+    for spectrum_name in ("gsa", "esa"):
+        channels = configuration[f"{spectrum_name}_channels"]
         total = sum(w for _, _, w in channels.values())
         for name, (_, _, weight) in channels.items():
             strength, placeholder = line_strength(name)
+            md = md_line_strength(name) if include_md and name not in USER_LINE_STRENGTH_OVERRIDE else 0.0
             report[name] = {"spectrum": spectrum_name,
-                            "line_strength_1e-20_cm2": strength,
+                            "line_strength_1e-20_cm2": strength + md,
+                            "line_strength_ed_1e-20_cm2": strength,
+                            "line_strength_md_effective_1e-20_cm2": md,
                             "weight": weight,
                             "share_in_spectrum": weight / total,
                             "placeholder": placeholder}
@@ -543,8 +682,14 @@ def main():
                              "including all lower orders (default: %(default)s).")
     parser.add_argument("--sum-tolerance", type=float, default=GAUSSIAN_RELATIVE_TOLERANCE,
                         help="Relative numerical Gaussian-sum omission bound (default: %(default)s); 0 disables adaptive omission.")
-    parser.add_argument("--coupling", type=float, default=DEFAULT_COUPLING, help="Dimensionless coupling strength; 0 disables sidebands.")
+    parser.add_argument("--coupling", type=float, default=None,
+                        help="Dimensionless coupling strength; 0 disables sidebands "
+                             f"(default: {ABSORPTION_CALIBRATION['coupling']:g} calibrated, "
+                             f"{DEFAULT_COUPLING:g} with --original-model).")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE_K, help="Temperature in K, including 0 K.")
+    parser.add_argument("--original-model", action="store_true",
+                        help="Previous, uncalibrated model: Table 4 levels, sigma 8.5 cm^-1, "
+                             "coupling 0.05, electric-dipole weights only.")
     switches = parser.add_mutually_exclusive_group()
     switches.add_argument("--no-phonons", action="store_true", help="Disable all four phonon bands.")
     switches.add_argument("--phonon-bands", type=int, nargs="+", choices=(1, 2, 3, 4),
@@ -554,10 +699,15 @@ def main():
     parser.add_argument("--data-only", action="store_true", help="CSV/JSON only; no Matplotlib needed.")
     parser.add_argument("--no-show", action="store_true", help="Save plots without opening a window.")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Output directory; default: results/max_N_phonons beside this script.")
+                        help="Output directory; default: results/max_N_phonons beside this script "
+                             "(results/max_N_phonons_original with --original-model).")
     args = parser.parse_args()
     if args.max_phonons < 1:
         parser.error("--max-phonons must be at least 1.")
+    configuration = model_configuration(USE_ABSORPTION_CALIBRATION and not args.original_model)
+    variant = "absorption-calibrated" if configuration["calibrated"] else "original model"
+    if args.coupling is None:
+        args.coupling = configuration["coupling"]
     if (not np.all(np.isfinite([WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, WAVELENGTH_STEP_NM]))
             or WAVELENGTH_MIN_NM <= 0 or WAVELENGTH_MAX_NM <= WAVELENGTH_MIN_NM or WAVELENGTH_STEP_NM <= 0):
         raise ValueError("Invalid wavelength range or step.")
@@ -565,16 +715,21 @@ def main():
                np.isin(np.arange(1, 5), args.phonon_bands) if args.phonon_bands is not None else
                band_mask())
     if args.output_dir is None:
-        args.output_dir = Path(__file__).resolve().parent / "results" / f"max_{args.max_phonons}_phonons"
+        suffix = "" if configuration["calibrated"] else "_original"
+        args.output_dir = (Path(__file__).resolve().parent / "results"
+                           / f"max_{args.max_phonons}_phonons{suffix}")
+    print(f"Model: {variant}")
     combinations, width_groups = estimate_cost(args.max_phonons, enabled, args.temperature, args.coupling)
     print(f"Estimate: {combinations:,} phonon combinations per channel, up to {width_groups:,} Gaussian width groups.")
     if combinations > COMBINATION_WARNING_THRESHOLD:
         warnings.warn(f"{combinations:,} combinations per channel: this run can take a long time and a lot of memory. "
                       "Consider a lower --max-phonons.", stacklevel=1)
-    gsa = MultiPhononSpectrum(GSA_CHANNELS, args.coupling, args.temperature, enabled,
-                            args.max_phonons, args.sum_tolerance)
-    esa = MultiPhononSpectrum(ESA_CHANNELS, args.coupling, args.temperature, enabled,
-                            args.max_phonons, args.sum_tolerance)
+    gsa = MultiPhononSpectrum(configuration["gsa_channels"], args.coupling, args.temperature, enabled,
+                              args.max_phonons, args.sum_tolerance,
+                              electronic_sigma_cm1=configuration["electronic_sigma_gsa_cm1"])
+    esa = MultiPhononSpectrum(configuration["esa_channels"], args.coupling, args.temperature, enabled,
+                              args.max_phonons, args.sum_tolerance,
+                              electronic_sigma_cm1=configuration["electronic_sigma_esa_cm1"])
     n = int(np.ceil((WAVELENGTH_MAX_NM-WAVELENGTH_MIN_NM)/WAVELENGTH_STEP_NM)) + 1
     wavelengths = np.linspace(WAVELENGTH_MIN_NM, WAVELENGTH_MAX_NM, n)
     factors = np.column_stack((wavelengths, gsa.factor(wavelengths), esa.factor(wavelengths)))
@@ -584,9 +739,17 @@ def main():
     np.savetxt(args.output_dir / "f_gsa_f_esa_four_gaussian_multiphonon.csv", factors,
                delimiter=",", header="wavelength_nm,f_gsa,f_esa", comments="", fmt="%.12g")
     profile = export_profile(args.output_dir, enabled)
-    weight_report = channel_weight_report()
+    weight_report = channel_weight_report(configuration)
     settings = {
         "model": "conditional_truncated_independent_Poisson_Gaussian_bands",
+        "model_variant": variant,
+        "absorption_calibration": (ABSORPTION_CALIBRATION if configuration["calibrated"] else None),
+        "stark_levels_cm1": {name: levels.tolist() for name, levels in configuration["levels"].items()},
+        "stark_levels_source": "J. Phys. Chem. C 129, 20446 (2025), Table 4(B) (ab initio)"
+                               + ("; with the absorption calibration applied" if configuration["calibrated"] else ""),
+        "magnetic_dipole_included": configuration["include_magnetic_dipole"],
+        "md_reduced_matrix_elements_sq": (MD_REDUCED_MATRIX_ELEMENTS_SQ
+                                          if configuration["include_magnetic_dipole"] else None),
         "maximum_phonons_per_absorption": args.max_phonons,
         "cutoff_counts": "total created plus consumed phonons; includes orders 0 through maximum",
         "gaussian_sum_relative_omission_bound": args.sum_tolerance,
@@ -613,7 +776,7 @@ def main():
         "phonon_sigmas_cm1": PHONON_SIGMAS_CM1.tolist(),
         "phonon_peak_heights": PHONON_PEAK_HEIGHTS.tolist(),
         "phonon_area_weights": phonon_area_weights().tolist(),
-        "electronic_sigma_cm1": ELECTRONIC_SIGMA_CM1,
+        "electronic_sigma_cm1": {"gsa": gsa.electronic_sigma_cm1, "esa": esa.electronic_sigma_cm1},
         "channel_probabilities": gsa.channel_probabilities | esa.channel_probabilities,
         "channel_combinations": {
             name: (kernel if len(kernel) <= JSON_COMBINATION_LIMIT else
@@ -632,7 +795,12 @@ def main():
                         "Gaussian phonon variances add for independently sampled events, even at zero net shift.",
                         "Gaussian bands unchanged; adaptive arithmetic omissions have a relative bound, with no artificial absorption floor.",
                         "Use --sum-tolerance 0 to evaluate every non-underflow Gaussian contribution.",
-                        "Channel weights from Judd-Ofelt: Omega_t from SI Table S4; [U(t)]^2 from SI Table S5 and Carnall et al. 1978 (Appendix XIII Table 2, Tm3+:LaF3)."],
+                        "Channel weights from Judd-Ofelt: Omega_t from SI Table S4; [U(t)]^2 from SI Table S5 and Carnall et al. 1978 (Appendix XIII Table 2, Tm3+:LaF3)."]
+                       + (["Calibrated: width, coupling and Stark corrections fitted to the RT GSA bands of NaTmF4@NaYF4 in cyclohexane; "
+                           "the 1716-1772 nm part of 3F4 (solvent opaque) was excluded.",
+                           "Calibrated: ESA width equals the GSA width (not measured); ESA follows from the calibrated levels.",
+                           "Calibrated: magnetic-dipole strengths added (intermediate coupling), S_MD,eff = 9n^2/(n^2+2)^2 S'_MD."]
+                          if configuration["calibrated"] else []),
     }
     (args.output_dir / "four_gaussian_multiphonon_settings.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -641,9 +809,13 @@ def main():
     print(f"Results: {args.output_dir.resolve()}")
     print(f"Active phonon bands: {(np.flatnonzero(enabled) + 1).tolist()}")
     print(f"Maximum phonons per transition: {args.max_phonons} (all lower orders included)")
+    print(f"Electronic sigma: GSA {gsa.electronic_sigma_cm1:g} cm-1, ESA {esa.electronic_sigma_cm1:g} cm-1; "
+          f"coupling {args.coupling:g}")
     for name, info in weight_report.items():
         flag = "  [PLACEHOLDER]" if info["placeholder"] else ""
-        print(f"{name}: S = {info['line_strength_1e-20_cm2']:.4f} e-20 cm2, "
+        md = info["line_strength_md_effective_1e-20_cm2"]
+        md_text = f" (ED {info['line_strength_ed_1e-20_cm2']:.4f} + MD {md:.4f})" if md else ""
+        print(f"{name}: S = {info['line_strength_1e-20_cm2']:.4f} e-20 cm2{md_text}, "
               f"share in {info['spectrum'].upper()} = {info['share_in_spectrum']:.3f}{flag}")
     for name, diagnostics in settings["channel_probabilities"].items():
         print(f"{name}: order probabilities = {diagnostics['order_probabilities']}; "
@@ -651,7 +823,7 @@ def main():
     if not args.data_only:
         figures = plot_results(args.output_dir, wavelengths, gsa, esa, profile,
                                args.plot_normalization,
-                               full_factors=factors[:, 1:])
+                               full_factors=factors[:, 1:], variant_label=variant)
         import matplotlib.pyplot as plt
         if args.no_show:
             for figure in figures:
