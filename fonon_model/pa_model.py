@@ -7,11 +7,14 @@ Gedeelde natuurkunde-/modelcode voor het DRE/RK4-model van Tm3+-gedoteerde
 NaYF4 photon-avalanche nanodeeltjes (Lee et al., Nature 589, 230-235 (2021)).
 
 Dit bestand bevat alle logica uit secties 1 t/m 7b van het oorspronkelijke
-script "rk4_full_gaussian_demo_v2.py" (fysische constanten,
+script "photon_avalanche_rk4_corrected_v2.py" (fysische constanten,
 modelparameters, de DRE's, de RK4-integrator, steady-state/emissie-functies,
 drempel-/stijgtijdbepaling, en de golflengte-scan).
 Correctie: de GSA-overgang 3H6 -> 3H5 ligt ONDER de fotonenergie bij
 1064 nm. Trek de circa 1200 cm^-1 mismatch af; dit geeft circa 1220 nm.
+Correctie 2: de SI-doorsneden (Tabel S6/S8) gelden bij 1064 nm. De
+golflengtefactoren worden daarom op 1064 nm genormeerd, niet op hun eigen
+piek, zodat W_GSA en W_ESA bij 1064 nm exact de SI-waarden zijn.
 De overige modelcode is behouden.
 
 Referentie:
@@ -64,19 +67,29 @@ def wavelength_gaussian_factor(wavelength_m: float,
 def rate_coefficient(sigma_m2: float,
                      wavelength_m: float,
                      lambda0_m: float,
-                     sigma_lambda_m: float) -> float:
+                     sigma_lambda_m: float,
+                     reference_wavelength_m: float = LAMBDA_PUMP_DEFAULT_NM * NM_TO_M) -> float:
     """Effective absorption rate coefficient [s^-1/(kW cm^-2)] at wavelength_m,
     combining the photon-energy scaling with the Gaussian detuning factor.
+
+    sigma_m2 is the cross section AT reference_wavelength_m (the SI values
+    are fitted at 1064 nm), so the line shape g is normalized there:
+        W(lambda) = sigma * I/(h nu) * g(lambda) / g(lambda_ref).
     Reduces exactly to `cross_section_to_rate_coeff` when wavelength_m ==
-    lambda0_m (Gaussian factor = 1).
+    reference_wavelength_m.
     """
     base = cross_section_to_rate_coeff(sigma_m2, wavelength_m)
-    return base * wavelength_gaussian_factor(wavelength_m, lambda0_m, sigma_lambda_m)
+    g_ref = wavelength_gaussian_factor(reference_wavelength_m, lambda0_m, sigma_lambda_m)
+    if g_ref <= 0.0:
+        raise ValueError("Line shape vanishes at the reference wavelength; "
+                         "the SI cross section cannot be anchored there.")
+    return base * wavelength_gaussian_factor(wavelength_m, lambda0_m, sigma_lambda_m) / g_ref
 
 
 # Reference rate coefficients at 1064 nm, purely for printed diagnostics
 # (they are NOT used directly in the rate equations anymore -- those call
-# `rate_coefficient` at the actual pump wavelength every time).
+# `rate_coefficient` at the actual pump wavelength every time, which
+# reproduces these values exactly at 1064 nm).
 SIGMA_G_M2 = 6.0e-4 * 1e-25
 SIGMA_ESA_M2 = 6.4e-25
 RATE_GSA_PER_KWCM2_AT_1064 = cross_section_to_rate_coeff(SIGMA_G_M2, 1064e-9)
@@ -253,12 +266,11 @@ DEFAULT_PARAMS = parameters_for_sample(3)
 # ---------------------------------------------------------------------------
 
 def resonance_factors(pump_wavelength_nm: float, p: PAParameters) -> Tuple[float, float]:
-    """Return (f_GSA, f_ESA): the dimensionless Gaussian resonance factors
-    (component (b) in the module docstring) at the given pump wavelength,
-    each in [0, 1] and peak-normalized to 1 at its own lambda0. Used both
-    by `pa_rate_equations` (via `gsa_esa_rates`) and directly for the
-    diagnostic/plotting functions below, so the exact same numbers appear
-    in the rate equations and in the plots.
+    """Return (f_GSA, f_ESA): the dimensionless Gaussian line shapes at the
+    given pump wavelength, each in [0, 1] and peak-normalized to 1 at its
+    own lambda0. The pump rates use these shapes divided by their value at
+    1064 nm (`anchored_resonance_factors`), because the SI cross sections
+    apply at 1064 nm, not at lambda0.
     """
     wavelength_m = pump_wavelength_nm * NM_TO_M
     f_gsa = wavelength_gaussian_factor(wavelength_m, p.lambda0_gsa_nm * NM_TO_M,
@@ -268,14 +280,26 @@ def resonance_factors(pump_wavelength_nm: float, p: PAParameters) -> Tuple[float
     return f_gsa, f_esa
 
 
+def anchored_resonance_factors(pump_wavelength_nm: float, p: PAParameters) -> Tuple[float, float]:
+    """Return (sigma_GSA(lambda)/sigma_GSA(1064 nm), sigma_ESA(lambda)/sigma_ESA(1064 nm)):
+    the line shapes of `resonance_factors` normalized at the SI reference
+    wavelength. These are the factors that multiply the photon-flux-scaled
+    SI rates in `gsa_esa_rate_coefficients` (exactly 1 at 1064 nm).
+    """
+    f_gsa, f_esa = resonance_factors(pump_wavelength_nm, p)
+    g_ref, e_ref = resonance_factors(LAMBDA_PUMP_DEFAULT_NM, p)
+    return f_gsa / g_ref, f_esa / e_ref
+
+
 def gsa_esa_rate_coefficients(pump_wavelength_nm: float, p: PAParameters) -> Tuple[float, float]:
     """Return (W_GSA, W_ESA): the full rate coefficients [s^-1/(kW cm^-2)]
-    at the given pump wavelength, i.e. photon-energy scaling (a) times the
-    resonance factor (b). This is the single place where (a) and (b) are
-    combined; `pa_rate_equations`, `estimate_stable_dt`, and every
-    diagnostic/plotting function below all go through this function (or
-    the equivalent `rate_coefficient` calls it wraps), so there is exactly
-    one implementation of "the GSA/ESA rate at wavelength lambda".
+    at the given pump wavelength, i.e. the photon-energy scaling times the
+    line shape normalized at 1064 nm (`anchored_resonance_factors`), so that
+    both equal the SI rates at 1064 nm. `pa_rate_equations`,
+    `estimate_stable_dt`, and every diagnostic/plotting function below go
+    through this function (or the `rate_coefficient` calls it wraps), so
+    there is exactly one implementation of "the GSA/ESA rate at wavelength
+    lambda".
     """
     wavelength_m = pump_wavelength_nm * NM_TO_M
     w_gsa = rate_coefficient(p.sigma_gsa_m2, wavelength_m,
@@ -625,7 +649,8 @@ def nonlinearity_slope_windowed_fit(
     Why this matters: the true, continuous log-log derivative of the DRE
     steady-state curve has a single sharp maximum at the knee (that is what
     `nonlinearity_slope_max_converged` finds -- for the 8% Tm sample here it
-    converges to about 90). But an "instantaneous" point-derivative is not
+    converges to about 70 with the SI rates at 1064 nm). But an
+    "instantaneous" point-derivative is not
     what is reported as the nonlinear order s in avalanche papers: instead,
     s is obtained by fitting a straight line through several data points
     across the rising (avalanche) segment of the log-log emission-vs-pump
@@ -637,10 +662,11 @@ def nonlinearity_slope_windowed_fit(
 
     For the 8% Tm, 1064 nm sample modelled here (`parameters_for_sample(3)`,
     matching Fig. 2a grey circles), `half_decade=0.10` (i.e. a fit window of
-    about a factor 2 in pump intensity, centred on the knee) reproduces the
-    paper's quoted s = 22.2 to within a few percent, and is stable to
-    roughly +/-10% as the underlying intensity grid is refined -- a much
-    better-behaved quantity than the point derivative.
+    about a factor 1.6 in pump intensity, centred on the knee) gives s of
+    about 21 with the SI rates at 1064 nm, close to the paper's s = 22.2
+    (Fig. 2a) and 22.6 (SI Fig. S5), and is stable to roughly +/-10% as the
+    underlying intensity grid is refined -- a much better-behaved quantity
+    than the point derivative.
 
     There is no way to recover the *exact* window the original authors used
     from the main text alone (it is presumably specified, if at all, in
@@ -854,15 +880,14 @@ def wavelength_dependence(p: PAParameters,
     """Scan pump wavelength at one or more fixed pump intensities.
 
     For every wavelength in `wavelengths_nm`, this computes:
-      1. the GSA and ESA resonance factors f(lambda) (component (b));
+      1. the peak-normalized GSA and ESA line shapes f(lambda);
       2. the corresponding full rate coefficients W_GSA(lambda),
-         W_ESA(lambda) (photon-energy scaling x resonance factor);
+         W_ESA(lambda) (photon-energy scaling x f(lambda)/f(1064 nm));
       3. for each pump intensity in `I_pump_values`, the RK4 steady-state
          populations and the resulting 800-nm emission.
 
-    Default range 950-1250 nm brackets both the derived GSA resonance
-    (~943.5 nm, just below the low end -- included so the plot shows the
-    approach to resonance) and the paper's actual 1064 nm operating point.
+    Default range 950-1250 nm contains both the paper's 1064 nm operating
+    point and the derived GSA line centre (~1219.7 nm).
     """
     if wavelengths_nm is None:
         wavelengths_nm = np.linspace(950.0, 1250.0, 41)
@@ -902,9 +927,9 @@ def sanity_check_wavelength_model(p: PAParameters,
     ~1 exactly at resonance and ~0 far away; GSA/ESA rates must never
     increase with detuning; the same intensity at a strongly detuned
     wavelength must give a lower rate (and, downstream, lower steady-state
-    emission) than at resonance; and the rate exactly at lambda0 must
-    equal the plain photon-energy-scaled rate (Gaussian factor = 1,
-    i.e. no double-counting of the resonance factor at its own center).
+    emission) than at resonance; and the rate at the SI reference
+    wavelength (1064 nm) must equal the plain photon-energy-scaled SI rate
+    (the line shape is normalized there, not at lambda0).
     """
     print("\n--- Wavelength-model sanity checks "
           f"(lambda0_gsa={p.lambda0_gsa_nm:.1f} nm, lambda0_esa={p.lambda0_esa_nm:.1f} nm, "
@@ -921,16 +946,16 @@ def sanity_check_wavelength_model(p: PAParameters,
     print(f"  f_GSA(lambda0_gsa + {detune_probe_nm:.0f} nm) = {f_gsa_far:.3e}  (expect << 1)")
     print(f"  f_ESA(lambda0_esa + {detune_probe_nm:.0f} nm) = {f_esa_far:.3e}  (expect << 1)")
 
-    # 3. Rate at lambda0 must equal the plain photon-energy-scaled rate
-    #    (no extra suppression right at the resonance center).
-    w_gsa_res, _ = gsa_esa_rate_coefficients(p.lambda0_gsa_nm, p)
-    w_gsa_plain = cross_section_to_rate_coeff(p.sigma_gsa_m2, p.lambda0_gsa_nm * NM_TO_M)
-    _, w_esa_res = gsa_esa_rate_coefficients(p.lambda0_esa_nm, p)
-    w_esa_plain = cross_section_to_rate_coeff(p.sigma_esa_m2, p.lambda0_esa_nm * NM_TO_M)
-    print(f"  W_GSA(lambda0_gsa) = {w_gsa_res:.6e}  vs. plain photon-scaled = {w_gsa_plain:.6e}  "
-          f"(match: {np.isclose(w_gsa_res, w_gsa_plain)})")
-    print(f"  W_ESA(lambda0_esa) = {w_esa_res:.6e}  vs. plain photon-scaled = {w_esa_plain:.6e}  "
-          f"(match: {np.isclose(w_esa_res, w_esa_plain)})")
+    # 3. Rate at the SI reference wavelength must equal the plain
+    #    photon-energy-scaled SI rate (the line shape is normalized there).
+    lam_ref = LAMBDA_PUMP_DEFAULT_NM
+    w_gsa_ref, w_esa_ref = gsa_esa_rate_coefficients(lam_ref, p)
+    w_gsa_plain = cross_section_to_rate_coeff(p.sigma_gsa_m2, lam_ref * NM_TO_M)
+    w_esa_plain = cross_section_to_rate_coeff(p.sigma_esa_m2, lam_ref * NM_TO_M)
+    print(f"  W_GSA({lam_ref:g} nm) = {w_gsa_ref:.6e}  vs. plain photon-scaled SI = {w_gsa_plain:.6e}  "
+          f"(match: {np.isclose(w_gsa_ref, w_gsa_plain)})")
+    print(f"  W_ESA({lam_ref:g} nm) = {w_esa_ref:.6e}  vs. plain photon-scaled SI = {w_esa_plain:.6e}  "
+          f"(match: {np.isclose(w_esa_ref, w_esa_plain)})")
 
     # 4. Rates must be monotonically non-increasing with |detuning|, and a
     #    detuned pump must give a strictly lower rate at fixed intensity.
@@ -950,3 +975,4 @@ def sanity_check_wavelength_model(p: PAParameters,
     print(f"  E(I={I_pump_probe:g} kW/cm^2) at ESA resonance ({p.lambda0_esa_nm:.0f} nm) = {e_resonant:.4g}")
     print(f"  E(I={I_pump_probe:g} kW/cm^2) detuned by +{detune_probe_nm:.0f} nm       = {e_detuned:.4g}")
     print(f"    emission decreases under strong detuning: {bool(e_detuned <= e_resonant)}")
+
