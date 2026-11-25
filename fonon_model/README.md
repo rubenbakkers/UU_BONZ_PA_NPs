@@ -7,7 +7,7 @@ This folder couples a continuous phonon band to the GSA/ESA absorption and photo
 | File | Purpose |
 |---|---|
 | [pa_fononband.py](pa_fononband.py) | Builds the electronic and phonon spectra, exports the factors and runs the kinetic analyses |
-| [1 fonon zijband.py](<1 fonon zijband.py>) | Standalone GSA/ESA spectra with the same four Gaussian phonon bands, evaluated analytically with up to N phonons per transition |
+| [1 fonon zijband.py](<1 fonon zijband.py>) | Standalone GSA/ESA spectra with the same four Gaussian phonon bands, evaluated analytically with up to N phonons per transition. **By default it uses the absorption-calibrated model** (shifted/stretched Stark levels, σ = 26.8 cm⁻¹, coupling 0.12; see `calibrate_from_absorption.py`); `--original-model` gives the Table 4 levels, σ = 8.5 cm⁻¹ and coupling 0.05. `pa_fononband.py` does not use this calibration (see below). |
 | [pa_model.py](pa_model.py) | Local model module with the SI parameters, population equations, RK4 and emission/analysis functions |
 | [requirements.txt](requirements.txt) | NumPy, Matplotlib and SciPy for the full calculation |
 
@@ -49,10 +49,12 @@ You can choose which parts a full run makes with `--plots` (only these) or `--sk
 | `detuning` | Emission vs intensity per pump wavelength (101 wavelengths, 1000–1100 nm) | ~30 s, together with `smax` and `ith` |
 | `smax` | Slope of the avalanche segment vs wavelength | uses the detuning calculation |
 | `ith` | Threshold vs wavelength, numerical and analytical | uses the detuning calculation |
+| `ith_full` | Analytical threshold only, 800–1600 nm (`ITH_FULL_*`) | ~2 s |
 | `rise` | 95% rise time vs intensity | ~3 s |
+| `risewl` | Longest rise time (at the threshold) vs pump wavelength, 1050–1100 nm in 0.5-nm steps (`RISE_WL_*`), with the c/√R_GSA scaling | ~40 s |
 | `sigma` | Peak rise time vs electronic width | ~15 s |
 
-A full default run takes about one minute (52 s on the test machine).
+A full default run takes about two minutes (112 s on the test machine).
 
 ```text
 python fonon_model/pa_fononband.py --no-show --skip-plots sigma --output-dir fonon_model/results
@@ -79,7 +81,7 @@ The rise-time peak finder first adds 15 points within ±4.7% of the analytical t
 
 The default is `ABSORPTION_MODEL = "phonon_band"`. GSA contains ³H₆ → ³F₄/³H₅; ESA contains ³F₄ → ³H₄/³F₃/³F₂. **All five channels** use Boltzmann-weighted Stark lines, an electronic Gaussian width of 8.5 cm⁻¹ and finite-temperature Huang–Rhys sidebands. The phonon contribution replaces the effective H5 GSA width of 300 cm⁻¹; that width is not applied a second time to the phonon spectrum.
 
-The band is approximated with weighted integration nodes. By default (`--band-profile four_gaussian`) the profile is the sum of four Gaussians that approximate the dotted Yb/Tm Raman curve of Wilhelm et al. (2013, Fig. 3A, [doi:10.7150/thno.5113](https://doi.org/10.7150/thno.5113)), with the same parameters as `PHONON_*_CM1` in `1 fonon zijband.py`:
+By default (`--band-profile four_gaussian`) the phonon band is the sum of four Gaussians that approximate the dotted Yb/Tm Raman curve of Wilhelm et al. (2013, Fig. 3A, [doi:10.7150/thno.5113](https://doi.org/10.7150/thno.5113)), with the same parameters as `PHONON_*_CM1` in `1 fonon zijband.py`:
 
 | Component | Centre (cm⁻¹) | σ (cm⁻¹) | Height |
 |---|---:|---:|---:|
@@ -88,7 +90,9 @@ The band is approximated with weighted integration nodes. By default (`--band-pr
 | 3 | 364 | 15 | 0.66 |
 | 4 | 408 | 24 | 0.36 |
 
-The profile is sampled on 5 cm⁻¹ nodes between 200 and 480 cm⁻¹ (57 nodes, weighted mean ≈ 324 cm⁻¹). Each node is a sharp mode; the sideband width comes from the spread over the nodes plus the electronic width. The old single Gaussian band (225–450 cm⁻¹, weighted mean 320 cm⁻¹, width 45 cm⁻¹) remains available with `--band-profile gaussian --band-min 225 --band-max 450 --band-step 15`. The Huang–Rhys factor is 0.05 per channel by default. With `--phonon-model discrete` the three modes of 250, 305 and 365 cm⁻¹ are used. With that choice the ESA channels here still keep phonon coupling by default; this differs from the standalone GSA phonon script.
+The bands are **not** sampled into separate modes. Each band k is one Poisson process for phonon emission and one for absorption (Bose occupation at the band centre), and every phonon of band k has a Gaussian energy N(ω_k, s_k²). Emitting m and absorbing l phonons of band k therefore shifts a line by the Gaussian N((m − l)ω_k, (m + l)s_k²); the four bands are combined by convolution. Band k gets the share A_k·s_k / Σ A_j·s_j of the total Huang–Rhys factor (its area under the Raman curve; weighted mean ≈ 324 cm⁻¹). The convolution is evaluated on a 1 cm⁻¹ shift grid (`--phonon-grid-step`); `phonon_grid_error_bound()` checks the quadrature error for every channel. `--band-profile gaussian` uses one Gaussian band (`--band-mean`, default 320 cm⁻¹; `--band-sigma`, default 45 cm⁻¹); `--phonon-model discrete` uses three sharp modes of 250, 305 and 365 cm⁻¹ (with that choice the ESA channels still keep phonon coupling).
+
+Huang–Rhys factors: **S(³H₆ → ³H₅) = 0.112**, calibrated so that the 1064-nm anchor (SI σ_GSA) reproduces the Judd–Ofelt integral of ³H₆ → ³H₅ (electric dipole only, n = 1.48). Refit it with `--calibrate-h5` after changing the band or the temperature. The other four channels keep the uncalibrated 0.05. The Stark levels are the unmodified Table 4 levels with σ = 8.5 cm⁻¹ for all channels; the absorption calibration of `1 fonon zijband.py` (shifted/stretched levels, σ = 26.8 cm⁻¹, coupling 0.12) is **not** applied here.
 
 The relative absorption factors are:
 
@@ -123,40 +127,32 @@ with Ω₂, Ω₄, Ω₆ = 2.37, 3.05, 0.41 × 10⁻²⁰ cm² (SI Table S4 of L
 
 Because of the 1064-nm anchor only the ratios within one spectrum matter. `USE_JUDD_OFELT_WEIGHTS = False` at the top of the script restores the old weights of 1.0. The matrix elements are for Tm³⁺:LaF₃ (intermediate coupling) and are an approximation for NaYF₄.
 
-## Settings and custom band files
+## Settings
 
 Temperature and electronic width are set at the top with `TEMPERATURE_K` and `STARK_SIGMA_CM1`. The temperature has no command-line option in this script. For the phonon route `LORENTZ_HWHM_CM1 = 0` must stay; a nonzero Lorentz width is rejected.
 
 | Option | Meaning |
 |---|---|
-| `--phonon-model band` or `discrete` | Continuous band approximation or three discrete modes |
-| `--band-min`, `--band-max`, `--band-step` | Band limits and node spacing in cm⁻¹ |
-| `--band-profile four_gaussian`, `gaussian`, `uniform` or `file` | Shape of the band; default `four_gaussian` |
-| `--band-mean`, `--band-sigma` | Only for `gaussian`: weighted mean and assumed profile width in cm⁻¹ |
-| `--band-file` | Custom CSV with a band profile; selects the file route |
-| `--coupling-h5`, `--coupling-f4` | Total couplings for the two GSA channels |
+| `--phonon-model band` or `discrete` | Gaussian phonon bands or three sharp modes |
+| `--band-profile four_gaussian` or `gaussian` | Four Raman Gaussians (default) or one Gaussian band |
+| `--band-mean`, `--band-sigma` | Only for `gaussian`: band centre and σ in cm⁻¹ |
+| `--phonon-grid-step` | Quadrature step of the phonon-shift grid in cm⁻¹ (default 1) |
+| `--coupling-h5`, `--coupling-f4` | Total couplings for the two GSA channels (default 0.112 and 0.05) |
+| `--calibrate-h5` | Fit S(³H₆ → ³H₅) to Judd–Ofelt instead of using `--coupling-h5` |
 | `--coupling-h4`, `--coupling-f3`, `--coupling-f2` | Total couplings for the three ESA channels |
 | `--kernel-tolerance` | Limit on the omitted kernel mass; default 10⁻³⁵ |
+| `--scan-range MIN MAX STEP`, `--include-1450` | Pump wavelengths of the detuning scan; extra 1390–1490 nm band |
+| `--plots`, `--skip-plots` | Choose the parts of a full run (see above) |
 
 Examples:
 
 ```text
 python fonon_model/pa_fononband.py --spectra-only --no-show --coupling-h5 0.08 --coupling-h4 0.10 --output-dir fonon_model/results/coupling
 python fonon_model/pa_fononband.py --data-only --phonon-model discrete --output-dir fonon_model/results/discrete
-python fonon_model/pa_fononband.py --spectra-only --no-show --band-file my_band.csv --output-dir fonon_model/results/my_band
+python fonon_model/pa_fononband.py --data-only --calibrate-h5 --output-dir fonon_model/results/calibrated
 ```
 
-A custom file contains at least two data rows and two comma-separated columns: wavenumber in cm⁻¹ and intensity. A header line is allowed. For example:
-
-```csv
-wavenumber_cm1,intensity
-225,0.1
-300,1.0
-375,0.7
-450,0.1
-```
-
-This example file is not included; save it yourself as `my_band.csv` for the third command. Intensities are interpolated onto the band nodes and the weights are normalized. Node positions must fit on the 5 cm⁻¹ shift lattice and the band width must contain a whole number of node steps. The Gaussian setting controls the weighted mean of the truncated band, not only the unweighted profile centre.
+Custom band files (`--band-file`, profiles `uniform`/`file`) and the node options `--band-min/--band-max/--band-step` of the earlier sampled-band version no longer exist.
 
 The older absorption modes `broad_gsa`, `stark`, `si_1064` and `hybrid` remain available through the constant `ABSORPTION_MODEL` in the script. There is no command-line option for it. Only `broad_gsa` still uses the effective H5 width of 300 cm⁻¹. With the default narrow GSA lines the current `hybrid` model cannot form its 1064-nm anchor reliably; that combination is rejected.
 
@@ -166,12 +162,12 @@ With the default model the following files are written:
 
 | File base | Contents |
 |---|---|
-| `f_gsa_f_esa_900_1500nm_phonon_band` | Factors over 900–1500 nm: `.csv`, and with plots `_linear.png/.svg` and `_log.png/.svg` |
+| `f_gsa_f_esa_900_1500nm_phonon_band` | Factors over 900–1500 nm: `.csv`, and with plots `_linear` and `_log` as `.pdf/.png/.svg` |
 | `f_gsa_f_esa_1040_1100nm_phonon_band` | Zoom around 1064 nm, same formats |
-| `phonon_band.csv` | Band nodes, mode fractions and coupling per node and channel |
+| `phonon_band.csv` | Per phonon band: centre, σ, fraction and Huang–Rhys factor per channel |
 | `phonon_settings.json` | Model settings, kernel diagnostics and accuracy bounds |
 
-The spectrum is always plotted twice with the same data: once with a linear and once with a logarithmic y-axis. On the linear axis the ³H₆ → ³H₅ GSA peak (f ≈ 5.6·10⁴ after the 1064-nm normalization) dominates; the log axis shows the weak phonon tails and the ESA structure.
+The spectrum is always plotted twice with the same data: once with a linear and once with a logarithmic y-axis. On the linear axis the ³H₆ → ³H₅ GSA peak (f ≈ 5.4·10³ after the 1064-nm normalization, with S = 0.112) dominates; the log axis shows the weak phonon tails and the ESA structure.
 
 The factor CSVs have five columns:
 
@@ -187,13 +183,17 @@ The last two columns give the contribution without phonon events, with the same 
 - `pa_detuning_summary_phonon_band.csv`: per pump wavelength `wavelength_nm,ith_numerical_kw_cm2,ith_analytical_kw_cm2,s_fit,s_peak_local,f_gsa,f_esa` (NaN where no PA was found in the window), for comparison with measurements;
 - `pa_ith_analytical_dense_phonon_band.csv`: the analytical threshold on the 0.1-nm grid;
 - `pa_rise_time_vs_intensity_phonon_band.pdf`: 95% rise time vs intensity, when valid rise-time data are found;
+- `pa_ith_analytical_full_range_phonon_band.pdf/.csv`: analytical threshold over 800–1600 nm (gaps: no avalanche);
+- `pa_rise_time_vs_wavelength_phonon_band.pdf/.csv`: longest rise time vs pump wavelength, with the c/√R_GSA scaling;
 - `pa_rise_peak_vs_sigma_phonon_band.pdf`: maximum rise time vs electronic width.
+
+All figures use one report style (Computer Modern like LaTeX `lmodern`, 16 cm wide, 11 pt, no titles; `PLOT_STYLE`). They are always saved; in an IPython console (Spyder, VS Code Interactive Window) they are also shown inline. Separate plot windows open only with `SHOW_WINDOWS = True`.
 
 Use separate output folders for parameter comparisons: new runs reuse the same file names. With the default width sweep the 1064-nm anchor keeps the pump rates at that wavelength unchanged.
 
 ## Assumptions and checks
 
-Band shape, couplings, electronic widths and relative Stark line strengths are uncalibrated model assumptions. An anchor at 1064 nm is no independent calibration of all other wavelengths. The long-wavelength analysis is exploratory. The band approximation does not describe a full measured phonon DOS.
+Band shape, the couplings except S(³H₆ → ³H₅), electronic widths, the Table 4 Stark levels and relative Stark line strengths are uncalibrated model assumptions. An anchor at 1064 nm is no independent calibration of all other wavelengths. The long-wavelength analysis is exploratory. The band approximation does not describe a full measured phonon DOS.
 
 The code checks the reference factors, default stick weights, conservation of population totals, agreement between the fast and the shared population equations and the bounded omitted kernel mass. The steady-state solver checks both time stability and the residual of the population equations. These built-in checks do not replace a comparison with measured data.
 

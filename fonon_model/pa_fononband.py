@@ -19,12 +19,20 @@ from the supplied kinetics script.
 
 Band settings, Huang-Rhys factors and electronic widths are listed below with
 the model settings. The band shape and couplings are the uncalibrated
-assumptions of the supplied phonon script. By default the band is the sum of
-four Gaussians that approximate the dotted Yb/Tm Raman curve of Wilhelm et
-al. (2013, Fig. 3A) (250/306/364/408 cm^-1, the same values as in the
-"1 fonon zijband" script), sampled on 5 cm^-1 nodes between 200 and
-480 cm^-1. With --band-profile gaussian the old single Gaussian band (mean
-320 cm^-1) remains available; a custom CSV can be given with --band-file.
+assumptions of the supplied phonon script, except the 3H6 -> 3H5 coupling: it
+is calibrated so that the 1064-nm anchor (SI sigma_GSA) reproduces the
+Judd-Ofelt integral of 3H6 -> 3H5 (see GSA_H5_HUANG_RHYS). By default the
+phonon sidebands come from the four Gaussian bands that approximate the dotted
+Yb/Tm Raman curve of Wilhelm et al. (2013, Fig. 3A) (250/306/364/408 cm^-1, the
+same values as in the "1 fonon zijband" script). The bands are NOT sampled into
+separate modes. Each band k is one Poisson process for phonon emission and one
+for phonon absorption (Bose occupation at the band centre), and every phonon of
+band k has a Gaussian energy N(w_k, s_k^2). The m-fold convolution of a
+Gaussian is again a Gaussian, so m emitted and l absorbed phonons of band k
+shift a line by N((m-l) w_k, (m+l) s_k^2), and the four bands are combined by
+convolution (centres and variances add). With --band-profile gaussian a single
+Gaussian band (centre 320 cm^-1) is used; with --phonon-model discrete three
+sharp modes.
 There is no absorption floor.
 
 Channel weights follow from Judd-Ofelt: w_c ~ S_c * nu_c with
@@ -45,9 +53,15 @@ Usage (with this script in the same folder as your existing pa_model.py):
     python pa_fononband.py --spectra-only --no-show
     python pa_fononband.py --data-only
     python pa_fononband.py --spectra-only --coupling-h5 0.08
+    python pa_fononband.py --data-only --calibrate-h5             # refit S(3H6 -> 3H5)
     python pa_fononband.py --data-only --phonon-model discrete
-    python pa_fononband.py --spectra-only --band-file my_band.csv
+    python pa_fononband.py --data-only --band-profile gaussian
     python pa_fononband.py --no-show --plots spectra ith          # only these
+    python pa_fononband.py --plots risewl                         # rise time vs wavelength
+    python pa_fononband.py --plots ith_full                       # analytical Ith 800-1600 nm
+
+Plots are saved to disk and shown inline in an IPython console (VS Code
+Interactive Window, Spyder); separate plot windows only with SHOW_WINDOWS.
     python pa_fononband.py --no-show --skip-plots sigma rise      # all except these
     python pa_fononband.py --no-show --scan-range 1050 1095 0.5   # other pump grid
     python pa_fononband.py --no-show --include-1450               # also 1390-1490 nm
@@ -67,17 +81,19 @@ from __future__ import annotations
 import os  # Used for saving into the chosen output folder
 import contextlib
 import json
+import logging
 from pathlib import Path
 from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 try:
+    import matplotlib
     import matplotlib.pyplot as plt
 except ModuleNotFoundError as exc:
     if exc.name != 'matplotlib':
         raise
-    plt = None
+    matplotlib = plt = None
 
 try:
     from scipy.integrate import solve_ivp
@@ -115,6 +131,14 @@ def _require_pa_model():
             "work without this module with ABSORPTION_MODEL='phonon_band'.")
 
 
+def _running_in_ipython():
+    """True inside Spyder, Jupyter or the VS Code Interactive Window."""
+    try:
+        return get_ipython() is not None  # noqa: F821 (defined by IPython)
+    except NameError:
+        return False
+
+
 def _require_matplotlib():
     if plt is None:
         raise RuntimeError("Plots require matplotlib; --data-only requires numpy only.")
@@ -123,9 +147,11 @@ _LOG_PLOT_FLOOR = 1e-300
 # Lower limit of the log absorption plot only; no floor is added to the spectrum.
 ABSORPTION_PLOT_MIN_FACTOR = 1e-20
 
-# A real avalanche has a sharp knee with s_max of order 10-100 (about 40 for
-# the 8% Tm sample here). Without an avalanche the emission is a pure power
-# law with s ~ 2-3. Anything in between is a safe cut-off.
+# A real avalanche has a sharp knee with s_max of order 10-100 (local maximum
+# about 70 for the 8% Tm sample at 1064 nm). Without an avalanche the
+# emission is a pure power law with s ~ 2-3. Anything in between is a safe
+# cut-off. The test uses the maximum local slope of the complete refined curve
+# (all points of adaptive_knee_scan), not of the coarse grid alone.
 MIN_AVALANCHE_SLOPE = 10.0
 
 # The knee must lie at least this many grid points away from the edges of the
@@ -156,7 +182,10 @@ INCLUDE_EXTRAPOLATED_WAVELENGTHS = False
 #   smax, ith : summaries of the detuning scan (they need the detuning
 #               calculation; it also runs when 'detuning' itself is off,
 #               but without the detuning figure)
+#   ith_full  : analytical threshold only, 800-1600 nm (ITH_FULL_*; seconds)
 #   rise      : 95% rise time vs intensity (seconds)
+#   risewl    : longest rise time (at the threshold) vs pump wavelength
+#               (about 0.5 s per wavelength; grid RISE_WL_*_NM)
 #   sigma     : peak rise time vs electronic width (rebuilds the spectra
 #               once for every width)
 # ---------------------------------------------------------------------------
@@ -165,7 +194,9 @@ PLOTS = {
     "detuning": True,
     "smax": True,
     "ith": True,
+    "ith_full": True,
     "rise": True,
+    "risewl": True,
     "sigma": True,
 }
 
@@ -173,14 +204,19 @@ PLOTS = {
 # Pump wavelengths of the detuning scan (detuning, smax, ith), in nm.
 # Default: the measurement range 1000-1100 nm in 1-nm steps. The narrowest
 # structure in the model (3F4 -> 3F2 ESA Stark lines, sigma 8.5 cm^-1) is
-# about 2.3 nm FWHM near 1064 nm, so 1 nm resolves it; a finer step mainly
-# costs time (about 0.15 s per wavelength without PA, 0.6 s with PA).
+# about 2.3 nm FWHM near 1064 nm, so 1 nm samples it only coarsely (about two
+# points per FWHM): interpolating the 1-nm scan deviates up to ~15% from the
+# 0.1-nm analytical threshold. A finer step mainly costs time (about 0.15 s
+# per wavelength without PA, 0.6 s with PA).
 # The analytical threshold is also evaluated every ANALYTICAL_STEP_NM, which
 # costs almost nothing and shows the structure between the scan points.
 # Override on the command line with --scan-range MIN MAX STEP.
 # ---------------------------------------------------------------------------
 SCAN_MIN_NM, SCAN_MAX_NM, SCAN_STEP_NM = 1000.0, 1100.0, 1.0
 ANALYTICAL_STEP_NM = 0.1
+# Separate figure "ith_full": analytical threshold only, over a wide pump range.
+ITH_FULL_MIN_NM, ITH_FULL_MAX_NM, ITH_FULL_STEP_NM = 800.0, 1600.0, 0.1
+ITH_FULL_Y_MAX = 1e7  # kW/cm^2; cap of the y-axis (I_th diverges between the bands)
 DETUNING_PLOT_STEP_NM = 5.0  # detuning figure: one curve per 5 nm (all are computed)
 # Optional second range around the 3F4 -> 3H4 ESA resonance (Lee et al.: PA
 # between 1400 and 1470 nm). Off by default; switch on with --include-1450.
@@ -221,15 +257,20 @@ MAX_STEADY_TIME_S = 1280.0
 STEADY_RELATIVE_TOL = 1e-6
 STEADY_POPULATION_FLOOR = 1e-18
 
-# Choose the widest near-linear window around EACH curve's steepest rise.
-# These are explicit fitting criteria, not physical model parameters.
+# Straight-line fit around EACH curve's steepest rise (explicit fitting
+# criteria, not physical model parameters). SLOPE_FRACTION=None: the widest
+# window that meets all FIT_* criteria ("verified"). SLOPE_FRACTION=f: the
+# window where the local slope >= f * peak; the FIT_* criteria are then only
+# reported (fit["verified"]). The slope depends strongly on the window: at
+# 1064 nm the local maximum is ~70, f=0.25 gives ~42 (not verified) and a
+# +/-0.10-decade window ~21 (Lee et al.: s = 22.2-22.6).
 SLOPE_FRACTION = 0.25  # None: automatic; set e.g. 0.9 for a fixed-window comparison.
 FIT_MAX_ERROR_DEX = 0.03  # at most about 7.2% vertical discrepancy
 FIT_MIN_R2 = 0.999
 FIT_MIN_PEAK_RATIO = 0.95  # fitted slope at least 95% of local peak
 FIT_MIN_POINTS = 7
 FIT_MIN_SPAN_DEX = 0.5  # at least a factor sqrt(10) in emission
-LINE_EXTEND_DECADES = 0.0  # draw only where the line was verified
+LINE_EXTEND_DECADES = 0.0  # draw the line only over the fitted window
 
 
 def _safe_for_log(values: np.ndarray) -> np.ndarray:
@@ -290,7 +331,7 @@ E_3F2_CM1 = np.array([
 #   "phonon_band": electronic Gaussian lines + phonon sidebands, 1064-nm anchor
 #   "broad_gsa": GSA H5 sigma 300, GSA/ESA without background, anchor kept
 #   "stark"   : Stark sticks only (no background, no 1064-nm anchor)
-#   "si_1064" : Gaussian line shape with SI amplitudes (peak-normalized)
+#   "si_1064" : Gaussian line shape (pa_model), SI cross sections at 1064 nm
 #   "hybrid"  : narrow Stark lines + 1064-nm anchor; no background
 # ---------------------------------------------------------------------------
 ABSORPTION_MODEL = "phonon_band"  # "phonon_band", "broad_gsa", "stark", "si_1064", "hybrid"
@@ -303,7 +344,7 @@ ABSORPTION_KIND = "stark_gaussian" if _USE_STARK else "gaussian"
 ABSORPTION_LABEL = {
     "phonon_band": "GSA + ESA with phonon band + 1064-nm anchor",
     "stark": "Stark GSA + ESA (no background)",
-    "si_1064": "Gaussian with SI amplitudes (peak-normalized)",
+    "si_1064": "Gaussian line shape, SI cross sections at 1064 nm",
     "hybrid": "Stark without background + 1064-nm anchor",
     "broad_gsa": "Broadened GSA + ESA without background + 1064-nm anchor",
 }[ABSORPTION_MODEL]
@@ -318,6 +359,9 @@ GSA_H5_SIGMA_CM1 = 300.0  # Gaussian sigma of 3H6 -> 3H5 only, cm^-1
 #                                     sigma_int ~ nu * S)
 # The weights are normalized within a spectrum; because of the 1064-nm anchor
 # only the ratios between channels of the same spectrum matter.
+# Electric-dipole part only: the magnetic-dipole parts of 3H6 -> 3H5 and
+# 3F4 -> 3F3 (Delta J = 1) are omitted. With the anchor this only matters for
+# the ESA above about 1095 nm.
 JO_OMEGA_1E20_CM2 = np.array([2.37, 3.05, 0.41])  # Omega_2,4,6: SI Table S4 (beta-NaGdF4:Tm3+)
 JO_REDUCED_MATRIX_ELEMENTS = {  # [U(2)]^2, [U(4)]^2, [U(6)]^2
     "3H6 -> 3F4": (0.5395, 0.7261, 0.2421),  # SI Table S5
@@ -328,6 +372,14 @@ JO_REDUCED_MATRIX_ELEMENTS = {  # [U(2)]^2, [U(4)]^2, [U(6)]^2
 }
 JO_USE_FREQUENCY_FACTOR = True  # False: w_c = S_c (without nu_c)
 USE_JUDD_OFELT_WEIGHTS = True   # False: all channel weights 1.0 (old behaviour)
+# Absolute Judd-Ofelt integral, only for the anchor check and the 3H6 -> 3H5
+# calibration (the channel weights above need ratios only).
+JO_REFRACTIVE_INDEX = 1.48  # beta-NaYF4 (assumption); local field (n^2+2)^2/(9n)
+E_CHARGE_ESU, H_PLANCK_CGS, C_LIGHT_CGS = 4.80320471e-10, 6.62607015e-27, 2.99792458e10
+MULTIPLET_J = {"3H6": 6, "3F4": 4, "3H5": 5, "3H4": 4, "3F3": 3, "3F2": 2}
+# SI cross sections at 1064 nm (Lee et al. 2021, SI Table S6), m^2.
+SI_SIGMA_GSA_1064_M2 = 6.0e-29
+SI_SIGMA_ESA_1064_M2 = 6.4e-25
 
 
 def judd_ofelt_line_strength(name):
@@ -345,14 +397,29 @@ def judd_ofelt_weight(name, lower_cm1, upper_cm1):
     return weight
 
 
+def judd_ofelt_integrated_cross_section(name, lower_cm1, upper_cm1):
+    """Electric-dipole integral of sigma over wavenumber, in cm^2 cm^-1 = cm.
+
+    int sigma dnu = 8 pi^3 e^2 nu / (3 h c (2J+1)) * (n^2+2)^2/(9n) * S_ED  (CGS)
+    with nu the gap between the multiplet barycentres, J that of the lower
+    multiplet and n = JO_REFRACTIVE_INDEX.
+    """
+    n = JO_REFRACTIVE_INDEX
+    nu = float(np.mean(upper_cm1) - np.mean(lower_cm1))
+    two_j_plus_1 = 2 * MULTIPLET_J[name.split(" -> ")[0]] + 1
+    line_strength_cm2 = judd_ofelt_line_strength(name) * 1e-20
+    return (8.0 * np.pi**3 * nu / (3.0 * H_PLANCK_CGS * C_LIGHT_CGS * two_j_plus_1)
+            * (n**2 + 2.0)**2 / (9.0 * n) * E_CHARGE_ESU**2 * line_strength_cm2)
+
+
 # Both separate backgrounds have been removed completely from StarkSpectrum.
 # Nonzero weights are rejected; these values only report the setting.
 ESA_BACKGROUND_WEIGHT = 0.0
 GSA_BACKGROUND_WEIGHT = 0.0
 
-# SI anchor (1064 nm): in "phonon_band", "hybrid" and "broad_gsa". In "si_1064"
-# pa_model uses peak-normalized Gaussian factors; "stark" has no anchor.
-SI_REFERENCE_ANCHOR = ABSORPTION_MODEL in ("phonon_band", "hybrid", "broad_gsa")
+# SI anchor (1064 nm): in "phonon_band", "hybrid" and "broad_gsa"; in "si_1064"
+# pa_model normalizes its Gaussian factors at 1064 nm itself. "stark" has no anchor.
+SI_REFERENCE_ANCHOR = ABSORPTION_MODEL in ("phonon_band", "hybrid", "broad_gsa", "si_1064")
 REFERENCE_WAVELENGTH_NM = 1064.0
 # Historical names: only the normalization grid and Gaussian envelope in si_1064.
 # These centers/widths add no background to the Stark spectra.
@@ -390,39 +457,56 @@ CONV_GRID_STEP_CM1 = 0.5     # grid step [cm^-1]
 CONV_GRID_PAD_CM1 = 8000.0   # margin around the sticks [cm^-1]
 
 
-# Phonon model: "band" (integration over wavenumber) or "discrete" (old 3 modes).
+# ---------------------------------------------------------------------------
+# Phonon sidebands: Gaussian phonon bands and their convolution
+# ---------------------------------------------------------------------------
+# PHONON_MODEL "band": the electron-phonon coupling is spread over Gaussian
+# phonon bands. Profile "four_gaussian" (default): the four Gaussians that
+# approximate the dotted Yb/Tm Raman curve of Wilhelm et al. 2013, Fig. 3A
+# (https://doi.org/10.7150/thno.5113); shape proxy, not a measured phonon DOS.
+# Same centres, sigmas and heights as in the "1 fonon zijband" script; sigma
+# is a standard deviation, not a FWHM. Each band is used as a whole (no
+# sampling into separate modes) and gets the share A_k*s_k / sum_j(A_j*s_j)
+# of the total Huang-Rhys factor, i.e. its area under the Raman curve.
+# Profile "gaussian": one Gaussian band (BAND_MEAN_CM1, BAND_SIGMA_CM1).
+# PHONON_MODEL "discrete": sharp modes (sigma 0) at DISCRETE_ENERGIES_CM1.
 PHONON_MODEL = "band"
-# Default profile "four_gaussian": sum of four Gaussians that approximate the
-# dotted Yb/Tm Raman curve of Wilhelm et al. 2013, Fig. 3A
-# (https://doi.org/10.7150/thno.5113). Shape proxy, not a measured phonon DOS.
-# Same centres, sigmas and heights as PHONON_*_CM1 in the "1 fonon zijband"
-# script. Sigma is a standard deviation, not a FWHM.
+BAND_PROFILE = "four_gaussian"  # "four_gaussian" or "gaussian"
 FOUR_GAUSSIAN_CENTERS_CM1 = (250.0, 306.0, 364.0, 408.0)
 FOUR_GAUSSIAN_SIGMAS_CM1 = (14.0, 24.0, 15.0, 24.0)
 FOUR_GAUSSIAN_HEIGHTS = (0.68, 0.95, 0.66, 0.36)
-BAND_MIN_CM1 = 200.0     # 3.6 sigma below the 250-cm^-1 component.
-BAND_MAX_CM1 = 480.0     # 3 sigma above the 408-cm^-1 component.
-BAND_STEP_CM1 = 5.0      # Node spacing; finer than the narrowest sigma (14 cm^-1).
-BAND_MEAN_CM1 = 320.0    # Only for profile "gaussian": weighted mean.
-BAND_SIGMA_CM1 = 45.0    # Only for profile "gaussian": width (assumption).
-BAND_PROFILE = "four_gaussian"  # "four_gaussian", "gaussian", "uniform" or "file"
+BAND_MEAN_CM1 = 320.0    # Only for profile "gaussian": band centre.
+BAND_SIGMA_CM1 = 45.0    # Only for profile "gaussian": band sigma (assumption).
 DISCRETE_ENERGIES_CM1 = (250.0, 305.0, 365.0)
 DISCRETE_FRACTIONS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
 
-# Total Huang-Rhys factors per channel (uncalibrated).
-GSA_H5_HUANG_RHYS = 0.05  # Total S for 3H6 -> 3H5, to be fitted.
+# Total Huang-Rhys factors per channel. Only 3H6 -> 3H5 is calibrated; the
+# others are uncalibrated assumptions.
+# 3H6 -> 3H5 sets the whole GSA tail at 1000-1100 nm. It is chosen so that the
+# 1064-nm anchor (SI sigma_GSA) and Judd-Ofelt give the same integrated
+# 3H6 -> 3H5 cross section (calibrate_gsa_h5_huang_rhys(): 0.1119 for the
+# default four_gaussian band at 300 K). Electric-dipole part only, n = 1.48;
+# a magnetic-dipole part would lower S. A factor 2 in the JO integral gives
+# 0.087-0.144. Recalibrate with --calibrate-h5 after changing the phonon band.
+GSA_H5_HUANG_RHYS = 0.112
 GSA_F4_HUANG_RHYS = 0.05  # To be fitted separately for 3H6 -> 3F4.
 ESA_H4_HUANG_RHYS = 0.05  # 3F4 -> 3H4.
 ESA_F3_HUANG_RHYS = 0.05  # 3F4 -> 3F3.
 ESA_F2_HUANG_RHYS = 0.05  # 3F4 -> 3F2.
-PHONON_SHIFT_GRID_STEP_CM1 = 5.0  # Modes must lie exactly on this lattice.
+# Step of the shift grid on which the band convolution is evaluated. This is a
+# quadrature step, not a phonon-mode spacing: every Gaussian is evaluated
+# analytically at the grid points, and the sum of a Gaussian of sigma s over a
+# grid of step h equals its integral to a relative 2*exp(-2 pi^2 s^2 / h^2)
+# (Poisson summation). phonon_grid_error_bound() checks this for every channel.
+PHONON_GRID_STEP_CM1 = 1.0
+PHONON_GRID_MAX_RELATIVE_ERROR = 1e-30  # Reject a grid step that is too coarse.
 PHONON_TAIL_TOLERANCE = 1e-35  # Upper bound on the missing total kernel mass.
-PHONON_MAX_EVENTS_PER_MODE = 256  # Safety limit; exceeding it is an error.
+PHONON_MAX_EVENTS_PER_BAND = 256  # Safety limit; exceeding it is an error.
 REFERENCE_MAX_RELATIVE_KERNEL_ERROR = 1e-8  # Reject an insufficiently resolved anchor.
 
 # Filled by set_phonon_model(); all kernel functions read these globals.
-PHONON_ENERGIES_CM1 = DISCRETE_ENERGIES_CM1
-PHONON_MODE_FRACTIONS = DISCRETE_FRACTIONS
+# One entry per band: (centre_cm1, sigma_cm1, fraction of the Huang-Rhys factor).
+PHONON_BANDS = ()
 PHONON_DESCRIPTION = ""
 PHONON_INFO = {}
 
@@ -714,134 +798,80 @@ def channel_weight_report():
     return report
 
 
-def band_nodes(band_min, band_max, band_step):
-    """Nodes w_k and trapezoidal weights t_k for the integral over the band."""
-    values = np.array([band_min, band_max, band_step], dtype=float)
-    if not np.all(np.isfinite(values)) or not 0 < band_min < band_max or band_step <= 0:
-        raise ValueError("Band needs finite 0 < min < max and a positive step.")
-    count = int(round((band_max - band_min) / band_step))
-    if count < 1 or not np.isclose(band_min + count * band_step, band_max,
-                                   rtol=0, atol=1e-9):
-        raise ValueError("band-max minus band-min must be a multiple of band-step.")
-    nodes = band_min + band_step * np.arange(count + 1)
-    lattice = nodes / PHONON_SHIFT_GRID_STEP_CM1
-    if not np.allclose(lattice, np.rint(lattice), rtol=0, atol=1e-9):
-        raise ValueError("Band nodes must be multiples of PHONON_SHIFT_GRID_STEP_CM1 "
-                         f"({PHONON_SHIFT_GRID_STEP_CM1:g} cm^-1).")
-    trapezoid = np.ones(count + 1)
-    trapezoid[[0, -1]] = 0.5
-    return nodes, trapezoid
+def set_phonon_model(model=PHONON_MODEL, profile=BAND_PROFILE,
+                     mean_cm1=BAND_MEAN_CM1, sigma_cm1=BAND_SIGMA_CM1):
+    """Set PHONON_BANDS: (centre, sigma, fraction of S) for every phonon band.
 
-
-def _gaussian_log_weights(nodes, trapezoid, center, sigma):
-    return -0.5 * ((nodes - center) / sigma) ** 2 + np.log(trapezoid)
-
-
-def _weighted_mean(nodes, weights):
-    return float(np.sum(nodes * weights) / np.sum(weights))
-
-
-def _read_profile_file(path):
-    path = Path(path)
-    for skip in (0, 1):
-        try:
-            data = np.loadtxt(path, delimiter=",", comments="#", skiprows=skip, ndmin=2)
-            break
-        except ValueError:
-            data = None
-    if data is None or data.shape[1] < 2 or data.shape[0] < 2:
-        raise ValueError("band-file needs >= 2 rows and 2 comma-separated columns "
-                         "(wavenumber_cm1,intensity).")
-    x, y = data[:, 0], data[:, 1]
-    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
-        raise ValueError("band-file contains non-finite values.")
-    order = np.argsort(x)
-    return x[order], y[order]
-
-
-def band_fractions(nodes, trapezoid, profile, mean_cm1, sigma_cm1, band_file=None):
-    """Normalized weights f_k (sum = 1) of g(w) on the nodes."""
-    if profile == "four_gaussian":
+    "band" + "four_gaussian": the four Raman Gaussians, each used as one band.
+    Its share of the Huang-Rhys factor is its area A_k*s_k*sqrt(2 pi); the
+    common factor sqrt(2 pi) cancels in the normalization.
+    "band" + "gaussian": one Gaussian band at mean_cm1 with sigma_cm1.
+    "discrete": sharp modes (sigma 0) at DISCRETE_ENERGIES_CM1.
+    """
+    global PHONON_BANDS, PHONON_DESCRIPTION, PHONON_INFO
+    if model == "discrete":
+        centers = np.asarray(DISCRETE_ENERGIES_CM1, dtype=float)
+        sigmas = np.zeros_like(centers)
+        fractions = np.asarray(DISCRETE_FRACTIONS, dtype=float)
+    elif model == "band" and profile == "four_gaussian":
         centers = np.asarray(FOUR_GAUSSIAN_CENTERS_CM1, dtype=float)
         sigmas = np.asarray(FOUR_GAUSSIAN_SIGMAS_CM1, dtype=float)
         heights = np.asarray(FOUR_GAUSSIAN_HEIGHTS, dtype=float)
         if (centers.shape != sigmas.shape or centers.shape != heights.shape
-                or np.any(sigmas <= 0) or np.any(heights < 0) or not np.any(heights > 0)):
-            raise ValueError("Four-Gaussian band: matching centers, positive sigmas, "
-                             "nonnegative heights required.")
-        # Profile R(w) = sum_k A_k exp(-(w-w_k)^2/(2 s_k^2)); trapezoidal weight per node.
-        # The area per component (A_k s_k) follows automatically from the quadrature.
-        density = np.exp(-0.5 * ((nodes[:, None] - centers) / sigmas) ** 2) @ heights
-        weights = density * trapezoid
-    elif profile == "uniform":
-        weights = trapezoid.copy()
-    elif profile == "gaussian":
+                or np.any(sigmas <= 0) or np.any(heights < 0)):
+            raise ValueError("Four-Gaussian band: matching centres, positive sigmas "
+                             "and nonnegative heights required.")
+        fractions = heights * sigmas  # area of each Raman Gaussian (without sqrt(2 pi))
+    elif model == "band" and profile == "gaussian":
         if not np.isfinite(sigma_cm1) or sigma_cm1 <= 0:
             raise ValueError("band-sigma must be positive.")
-        if not nodes[0] < mean_cm1 < nodes[-1]:
-            raise ValueError("band-mean must lie strictly inside the band.")
-
-        def mean_for(center):
-            logw = _gaussian_log_weights(nodes, trapezoid, center, sigma_cm1)
-            return _weighted_mean(nodes, np.exp(logw - logw.max()))
-
-        # mean_for increases monotonically with the centre: bisection.
-        low, high = nodes[0] - 8 * sigma_cm1, nodes[-1] + 8 * sigma_cm1
-        for _ in range(200):
-            middle = 0.5 * (low + high)
-            if mean_for(middle) < mean_cm1:
-                low = middle
-            else:
-                high = middle
-        logw = _gaussian_log_weights(nodes, trapezoid, 0.5 * (low + high), sigma_cm1)
-        weights = np.exp(logw - logw.max())
-    elif profile == "file":
-        if band_file is None:
-            raise ValueError("Profile 'file' needs --band-file.")
-        x, y = _read_profile_file(band_file)
-        density = np.clip(np.interp(nodes, x, y, left=0.0, right=0.0), 0.0, None)
-        weights = density * trapezoid
-    else:
-        raise ValueError("profile must be 'four_gaussian', 'gaussian', 'uniform' or 'file'.")
-    if not np.all(np.isfinite(weights)) or weights.sum() <= 0:
-        raise ValueError("Band profile has no positive weight on the nodes.")
-    return weights / weights.sum()
-
-
-def set_phonon_model(model=PHONON_MODEL, band_min=BAND_MIN_CM1, band_max=BAND_MAX_CM1,
-                     band_step=BAND_STEP_CM1, profile=BAND_PROFILE,
-                     mean_cm1=BAND_MEAN_CM1, sigma_cm1=BAND_SIGMA_CM1, band_file=None):
-    """Set PHONON_ENERGIES_CM1 / PHONON_MODE_FRACTIONS (replaces the fixed modes)."""
-    global PHONON_ENERGIES_CM1, PHONON_MODE_FRACTIONS, PHONON_DESCRIPTION, PHONON_INFO
-    if model == "discrete":
-        energies = np.asarray(DISCRETE_ENERGIES_CM1, dtype=float)
-        fractions = np.asarray(DISCRETE_FRACTIONS, dtype=float)
-        description = "discrete " + "/".join(f"{e:g}" for e in energies) + " cm⁻¹"
+        centers = np.array([mean_cm1], dtype=float)
+        sigmas = np.array([sigma_cm1], dtype=float)
+        fractions = np.ones(1)
     elif model == "band":
-        energies, trapezoid = band_nodes(band_min, band_max, band_step)
-        fractions = band_fractions(energies, trapezoid, profile, mean_cm1,
-                                   sigma_cm1, band_file)
-        keep = fractions > 0  # Nodes without weight contribute nothing.
-        energies, fractions = energies[keep], fractions[keep]
-        fractions = fractions / fractions.sum()
-        description = (f"band {band_min:g}-{band_max:g} cm⁻¹ ({profile}, "
-                       f"{len(energies)} nodes, mean {_weighted_mean(energies, fractions):.1f} cm⁻¹)")
+        raise ValueError("band profile must be 'four_gaussian' or 'gaussian'.")
     else:
         raise ValueError("phonon model must be 'band' or 'discrete'.")
-    PHONON_ENERGIES_CM1 = tuple(float(e) for e in energies)
-    PHONON_MODE_FRACTIONS = tuple(float(f) for f in fractions)
+    if (centers.ndim != 1 or not len(centers) or fractions.shape != centers.shape
+            or not np.all(np.isfinite(centers)) or not np.all(np.isfinite(sigmas))
+            or not np.all(np.isfinite(fractions)) or np.any(sigmas < 0)
+            or np.any(fractions < 0) or fractions.sum() <= 0):
+        raise ValueError("Phonon bands need finite centres, sigmas >= 0 and "
+                         "nonnegative fractions with a positive sum.")
+    if np.any(centers <= 0) or np.any(centers <= 5 * sigmas):
+        raise ValueError("Each band centre must be positive and exceed 5 sigma, so "
+                         "that the Gaussian band does not reach zero phonon energy.")
+    keep = fractions > 0  # Bands without weight contribute nothing.
+    centers, sigmas, fractions = centers[keep], sigmas[keep], fractions[keep]
+    fractions = fractions / fractions.sum()
+    PHONON_BANDS = tuple((float(c), float(s), float(f))
+                         for c, s, f in zip(centers, sigmas, fractions))
+    mean = float(np.sum(fractions * centers))
+    # Spread of the one-phonon energy: band widths plus spread of the centres.
+    spread = float(np.sqrt(np.sum(fractions * (sigmas**2 + centers**2)) - mean**2))
+    if model == "discrete":
+        description = ("discrete " + "/".join(f"{c:g}" for c in centers)
+                       + " cm⁻¹ (sharp modes)")
+    else:
+        description = (f"{len(centers)} Gaussian band(s) "
+                       + "/".join(f"{c:g}" for c in centers)
+                       + f" cm⁻¹, convolved (mean {mean:.1f} cm⁻¹)")
     PHONON_DESCRIPTION = description
     PHONON_INFO = {
         "phonon_model": model,
         "description": description,
         "profile": profile if model == "band" else "discrete",
-        "band_min_cm1": float(band_min) if model == "band" else None,
-        "band_max_cm1": float(band_max) if model == "band" else None,
-        "band_step_cm1": float(band_step) if model == "band" else None,
-        "number_of_modes": len(energies),
-        "weighted_mean_cm1": _weighted_mean(energies, fractions),
-        "weighted_std_cm1": float(np.sqrt(
-            np.sum(fractions * (energies - _weighted_mean(energies, fractions)) ** 2))),
+        "number_of_bands": len(centers),
+        "bands": [{"center_cm1": float(c), "sigma_cm1": float(s),
+                   "fraction_of_huang_rhys_factor": float(f),
+                   "bose_occupation_at_center": phonon_occupation(float(c), TEMPERATURE_K)}
+                  for c, s, f in zip(centers, sigmas, fractions)],
+        "weighted_mean_cm1": mean,
+        "one_phonon_std_cm1": spread,
+        "grid_step_cm1": float(PHONON_GRID_STEP_CM1),
+        "method": ("Per band: Poisson emission and absorption (Bose occupation at the "
+                   "band centre); m emitted and l absorbed phonons give the Gaussian "
+                   "N((m-l)w_k, (m+l)s_k^2); bands combined by direct convolution."),
     }
     if model == "band" and profile == "four_gaussian":
         PHONON_INFO["four_gaussian"] = {
@@ -853,8 +883,6 @@ def set_phonon_model(model=PHONON_MODEL, band_min=BAND_MIN_CM1, band_max=BAND_MA
     return PHONON_INFO
 
 
-set_phonon_model()  # Default: four Gaussians (Wilhelm et al.), nodes 200-480 cm^-1 every 5 cm^-1.
-
 def phonon_occupation(energy_cm1, temperature_k):
     """Bose occupation; T=0 is supported for the phonon kernel itself."""
     if (not np.isfinite(temperature_k) or temperature_k < 0
@@ -864,6 +892,9 @@ def phonon_occupation(energy_cm1, temperature_k):
         return 0.0
     exponent = energy_cm1 / (K_B_CM1_PER_K * temperature_k)
     return 0.0 if exponent > 700 else float(1.0 / np.expm1(exponent))
+
+
+set_phonon_model()  # Default: the four Raman Gaussians, each used as one band.
 
 
 def _poisson_tail_bound(mean, order, probability):
@@ -882,7 +913,7 @@ def _poisson_pair(mean_emit, mean_absorb, tolerance):
         raise ValueError("Phonon event mean exceeds the supported range (100).")
     emit = [float(np.exp(-mean_emit))]
     absorb = [float(np.exp(-mean_absorb))]
-    for order in range(PHONON_MAX_EVENTS_PER_MODE + 1):
+    for order in range(PHONON_MAX_EVENTS_PER_BAND + 1):
         missing = (_poisson_tail_bound(mean_emit, order, emit[-1])
                    + _poisson_tail_bound(mean_absorb, order, absorb[-1]))
         if missing <= tolerance:
@@ -892,39 +923,82 @@ def _poisson_pair(mean_emit, mean_absorb, tolerance):
     raise ValueError("Phonon expansion did not converge; revise cutoff or parameters.")
 
 
+def _band_shift_masses(center, sigma, strength, temperature_k, step_cm1, tolerance):
+    """Shift distribution of ONE phonon band, as probability masses on a grid.
+
+    m ~ Poisson(S_k (n_k + 1)) phonons are emitted and l ~ Poisson(S_k n_k)
+    absorbed, with n_k the Bose occupation at the band centre. The m-fold
+    convolution of the Gaussian band N(w_k, s_k^2) is N(m w_k, m s_k^2), so the
+    pair (m, l) shifts a line by the Gaussian N((m - l) w_k, (m + l) s_k^2).
+    (m, l) = (0, 0) is the exact zero-phonon delta at shift 0. Each Gaussian is
+    evaluated analytically at the grid points and multiplied by the step (mass
+    per grid point). A sharp mode (sigma 0) puts its masses exactly at
+    (m - l) w_k, which must then be a multiple of the step.
+
+    Returns (index_of_first_entry, masses, omitted_mass_bound, max_events).
+    """
+    n = phonon_occupation(center, temperature_k)
+    emit, absorb, missing = _poisson_pair(strength * (n + 1), strength * n, tolerance)
+    order = len(emit) - 1
+    if sigma == 0:
+        stride = center / step_cm1
+        if not np.isclose(stride, round(stride), rtol=0, atol=1e-9):
+            raise ValueError("Sharp phonon modes must be multiples of PHONON_GRID_STEP_CM1.")
+        stride = int(round(stride))
+        masses = np.zeros(2 * order * stride + 1)
+        for m, p_emit in enumerate(emit):
+            for l, p_absorb in enumerate(absorb):
+                masses[(m - l + order) * stride] += p_emit * p_absorb
+        return -order * stride, masses, missing, order
+    # Gaussian band: the farthest and widest pairs set the extent of the grid;
+    # beyond 40 sigma every Gaussian underflows to exactly zero in float64.
+    half = int(np.ceil((order * center + 40.0 * sigma * np.sqrt(2 * order)) / step_cm1))
+    x = step_cm1 * np.arange(-half, half + 1)
+    masses = np.zeros(len(x))
+    masses[half] = emit[0] * absorb[0]  # zero-phonon delta (Debye-Waller factor)
+    for m, p_emit in enumerate(emit):
+        for l, p_absorb in enumerate(absorb):
+            weight = p_emit * p_absorb
+            if (m == 0 and l == 0) or weight == 0.0:
+                continue
+            mean = (m - l) * center
+            width = sigma * np.sqrt(m + l)
+            lo = np.searchsorted(x, mean - 40.0 * width, side="left")
+            hi = np.searchsorted(x, mean + 40.0 * width, side="right")
+            z = (x[lo:hi] - mean) / width
+            masses[lo:hi] += (weight * step_cm1 / (np.sqrt(2.0 * np.pi) * width)
+                              * np.exp(-0.5 * z * z))
+    return -half, masses, missing, order
+
+
 @lru_cache(maxsize=32)
-def _cached_phonon_kernel(energies, strengths, temperature_k, step_cm1, tolerance):
-    if (len(energies) != len(strengths) or not energies
-            or not np.all(np.isfinite(energies)) or min(energies) <= 0
+def _cached_phonon_kernel(bands, strengths, temperature_k, step_cm1, tolerance):
+    if (len(bands) != len(strengths) or not bands
             or not np.all(np.isfinite(strengths)) or min(strengths) < 0
             or not np.isfinite(step_cm1) or step_cm1 <= 0
             or not np.isfinite(temperature_k) or temperature_k < 0
             or not np.isfinite(tolerance) or not 0 < tolerance < 1):
         raise ValueError("Invalid phonon kernel parameters.")
-    lattice_positions = np.asarray(energies) / step_cm1
-    if not np.allclose(lattice_positions, np.rint(lattice_positions), rtol=0, atol=1e-9):
-        raise ValueError("Phonon energies must be exact multiples of the shift-grid step.")
     kernel = np.array([1.0])
-    min_index = 0
+    first_index = 0
     missing_bound = 0.0
     orders = []
-    for energy, strength, stride in zip(energies, strengths, np.rint(lattice_positions).astype(int)):
-        n = phonon_occupation(energy, temperature_k)
-        emit, absorb, missing = _poisson_pair(strength * (n + 1), strength * n,
-                                             tolerance / len(energies))
-        # Emitted minus absorbed phonons: q=-N,...,+N (Skellam distribution).
-        mode = np.convolve(emit, absorb[::-1])
-        order = len(emit) - 1
-        expanded = np.zeros(len(kernel) + 2 * order * stride)
-        for position, probability in enumerate(mode):
-            start = position * stride
-            expanded[start:start + len(kernel)] += probability * kernel
-        kernel = expanded
-        min_index -= order * stride
+    for (center, sigma, _fraction), strength in zip(bands, strengths):
+        start, masses, missing, order = _band_shift_masses(
+            center, sigma, strength, temperature_k, step_cm1, tolerance / len(bands))
+        nonzero = np.flatnonzero(masses)  # trim exact zeros (float underflow) only
+        masses = masses[nonzero[0]:nonzero[-1] + 1]
+        start += int(nonzero[0])
+        # Convolution of the band distributions by direct summation of
+        # nonnegative products (np.convolve, no FFT): far tails suffer no FFT
+        # round-off. Shifts near the event cutoff miss higher-order terms and
+        # lose relative precision, but only at masses far below the tolerance.
+        kernel = np.convolve(kernel, masses)
+        first_index += start
         missing_bound += missing  # Union bound for all omitted event tails.
         orders.append(order)
     kernel /= kernel.sum()  # Conditional normalization; correction bounded above.
-    shifts = (min_index + np.arange(len(kernel))) * step_cm1
+    shifts = (first_index + np.arange(len(kernel))) * step_cm1
     positive = kernel > 0  # Remove exact zeros only; no amplitude threshold/floor.
     shifts, kernel = shifts[positive], kernel[positive]
     shifts.setflags(write=False)
@@ -934,28 +1008,74 @@ def _cached_phonon_kernel(energies, strengths, temperature_k, step_cm1, toleranc
 
 def phonon_kernel(total_coupling, temperature_k=TEMPERATURE_K,
                   tolerance=PHONON_TAIL_TOLERANCE):
-    fractions = np.asarray(PHONON_MODE_FRACTIONS, dtype=float)
-    if (fractions.shape != (len(PHONON_ENERGIES_CM1),)
-            or not np.all(np.isfinite(fractions)) or np.any(fractions < 0)
-            or not np.isclose(fractions.sum(), 1.0)
-            or not np.isfinite(total_coupling) or total_coupling < 0):
-        raise ValueError("Mode fractions must sum to one and coupling must be >= 0.")
-    return _cached_phonon_kernel(tuple(PHONON_ENERGIES_CM1),
-                                 tuple(total_coupling * fractions),
-                                 float(temperature_k), float(PHONON_SHIFT_GRID_STEP_CM1),
-                                 float(tolerance))
+    """Distribution of the total phonon shift for a channel with Huang-Rhys S."""
+    if not PHONON_BANDS or not np.isfinite(total_coupling) or total_coupling < 0:
+        raise ValueError("Set the phonon bands first; the coupling must be >= 0.")
+    strengths = tuple(float(total_coupling * fraction) for _, _, fraction in PHONON_BANDS)
+    return _cached_phonon_kernel(PHONON_BANDS, strengths, float(temperature_k),
+                                 float(PHONON_GRID_STEP_CM1), float(tolerance))
+
+
+def no_phonon_event_weight(total_coupling, temperature_k=TEMPERATURE_K):
+    """Debye-Waller factor exp(-sum_k S_k (2 n_k + 1)): no phonon event at all."""
+    return float(np.exp(-sum(
+        total_coupling * fraction * (2.0 * phonon_occupation(center, temperature_k) + 1.0)
+        for center, _sigma, fraction in PHONON_BANDS)))
+
+
+def phonon_grid_error_bound(electronic_sigma_cm1):
+    """Relative quadrature error caused by the shift grid (Poisson summation).
+
+    The grid only enters in convolutions of smooth Gaussians: band with band
+    (np.convolve) and band with the electronic line (gaussian_density). For two
+    Gaussians the integrand is a Gaussian of variance s1^2 s2^2 / (s1^2 + s2^2),
+    and its sum over a grid of step h has relative error <= 2 exp(-2 pi^2 s^2/h^2).
+    Within one band the m-fold convolutions are analytic (no grid). Sharp modes
+    and the zero-phonon delta sit exactly on grid points (no error).
+    """
+    band_sigmas = [s for _, s, _ in PHONON_BANDS if s > 0]
+    if not band_sigmas:
+        return 0.0
+    pairs = [(a, b) for i, a in enumerate(band_sigmas) for b in band_sigmas[i + 1:]]
+    pairs += [(a, electronic_sigma_cm1) for a in band_sigmas]
+    variance = min(a * a * b * b / (a * a + b * b) for a, b in pairs)
+    return float(2.0 * np.exp(-2.0 * np.pi**2 * variance / PHONON_GRID_STEP_CM1**2))
+
+
+@lru_cache(maxsize=64)
+def _cached_broadened_sticks(lower, upper, temperature_k, coupling, tolerance,
+                             bands, step_cm1, boltzmann_mode):
+    """Every Stark stick combined with every phonon shift (key holds all inputs)."""
+    gaps, line_weights = transition_sticks(np.asarray(lower), np.asarray(upper),
+                                           temperature_k)
+    shifts, probabilities, missing, orders = phonon_kernel(coupling, temperature_k, tolerance)
+    weights = (line_weights.ravel()[:, None] * probabilities[None, :]).ravel()
+    gap_index = gaps.ravel() / step_cm1
+    if np.array_equal(gap_index, np.rint(gap_index)):
+        # Gaps on the grid as well: merge coincident lines exactly by index.
+        shift_index = np.rint(shifts / step_cm1).astype(np.int64)
+        index = (np.rint(gap_index).astype(np.int64)[:, None]
+                 + shift_index[None, :]).ravel()
+        base = int(index.min())
+        combined = np.bincount(index - base, weights=weights)
+        unique = (base + np.arange(len(combined))) * step_cm1
+    else:
+        positions = (gaps.ravel()[:, None] + shifts[None, :]).ravel()
+        unique, inverse = np.unique(positions, return_inverse=True)
+        combined = np.bincount(inverse, weights=weights, minlength=len(unique))
+    positive = combined > 0  # No binning of electronic energies; exact zeros only.
+    unique, combined = unique[positive], combined[positive]
+    unique.setflags(write=False)
+    combined.setflags(write=False)
+    return unique, combined, missing, orders
 
 
 def broadened_transition_sticks(lower, upper, temperature_k, coupling, tolerance):
-    gaps, line_weights = transition_sticks(lower, upper, temperature_k)
-    shifts, probabilities, missing, orders = phonon_kernel(coupling, temperature_k, tolerance)
-    positions = (gaps.ravel()[:, None] + shifts[None, :]).ravel()
-    weights = (line_weights.ravel()[:, None] * probabilities[None, :]).ravel()
-    # Exact merging of coincident lines; no binning of electronic energies.
-    unique, inverse = np.unique(positions, return_inverse=True)
-    combined = np.bincount(inverse, weights=weights, minlength=len(unique))
-    positive = combined > 0
-    return unique[positive], combined[positive], missing, orders
+    """Stark sticks combined with all phonon shifts (cached; independent of sigma)."""
+    return _cached_broadened_sticks(
+        tuple(float(e) for e in np.ravel(lower)), tuple(float(e) for e in np.ravel(upper)),
+        float(temperature_k), float(coupling), float(tolerance), PHONON_BANDS,
+        float(PHONON_GRID_STEP_CM1), BOLTZMANN_MODE)
 
 
 def gaussian_density(energy_cm1, sticks_cm1, weights, sigma_cm1):
@@ -1033,17 +1153,20 @@ class PhononSpectrum:
             channel_weight = weight / self.weight_sum
             self.prepared[name] = (sticks, amplitudes, sigma, channel_weight)
             shifts, kernel, _, _ = phonon_kernel(coupling, temperature_k, tolerance)
-            no_event_weight = float(np.exp(-sum(
-                coupling * fraction * (2 * phonon_occupation(e, temperature_k) + 1)
-                for e, fraction in zip(PHONON_ENERGIES_CM1, PHONON_MODE_FRACTIONS))))
+            no_event_weight = no_phonon_event_weight(coupling, temperature_k)
+            grid_error = phonon_grid_error_bound(sigma) if coupling > 0 else 0.0
+            if grid_error > PHONON_GRID_MAX_RELATIVE_ERROR:
+                raise ValueError(
+                    f"{name}: phonon grid too coarse for sigma {sigma:g} cm^-1 (relative "
+                    f"quadrature error {grid_error:.3g}); lower PHONON_GRID_STEP_CM1.")
             self.diagnostics[name] = {
                 "total_huang_rhys_S": float(coupling),
                 "electronic_sigma_cm1": float(base_sigma),
                 "kernel_mass": float(kernel.sum()),
                 "omitted_kernel_mass_upper_bound": missing,
-                "max_events_per_mode_each_sign": list(orders),
+                "max_events_per_band_each_sign": list(orders),
                 "no_phonon_event_weight": no_event_weight,
-                "net_zero_energy_shift_weight": float(kernel[shifts == 0].sum()),
+                "grid_quadrature_relative_error_bound": grid_error,
                 "integrated_stick_weight": float(amplitudes.sum()),
             }
             # Purely electronic transitions: the bare Stark lines, scaled by the
@@ -1271,6 +1394,45 @@ def _build_phonon_spectra():
     return gsa, esa, g_ref, e_ref
 
 
+def anchor_judd_ofelt_ratios(spectrum, sigma_ref_cm2):
+    """Per channel: integral of sigma implied by the 1064-nm anchor / Judd-Ofelt.
+
+    The anchor fixes sigma(1064 nm) = sigma_ref, so a channel's integrated
+    cross section is sigma_ref * (channel weight * stick weight) / raw(1064).
+    1 means the anchored spectrum agrees with the JO electric-dipole integral.
+    """
+    raw_reference = float(spectrum.raw_stark(1e7 / REFERENCE_WAVELENGTH_NM))
+    ratios = {}
+    for name, (_, amplitudes, _, channel_weight) in spectrum.prepared.items():
+        lower, upper, _ = spectrum.channels[name]
+        implied = sigma_ref_cm2 * channel_weight * float(np.sum(amplitudes)) / raw_reference
+        ratios[name] = implied / judd_ofelt_integrated_cross_section(name, lower, upper)
+    return ratios
+
+
+def calibrate_gsa_h5_huang_rhys(target_ratio=1.0, bracket=(0.01, 1.0)):
+    """Huang-Rhys factor of 3H6 -> 3H5 for which anchor_judd_ofelt_ratios = target_ratio.
+
+    Uses the current phonon bands, temperature, electronic width and kernel
+    settings. A larger S puts more sideband at 1064 nm and lowers the ratio
+    monotonically, so the root in the bracket is unique. Each evaluation
+    rebuilds the 3H5 spectrum (a few seconds).
+    """
+    if not _HAVE_SCIPY:
+        raise RuntimeError("The 3H6 -> 3H5 calibration requires scipy (scipy.optimize.brentq).")
+    name = "3H6 -> 3H5"
+    channel = {name: GSA_CHANNELS[name]}
+
+    def log_ratio(coupling):
+        spectrum = PhononSpectrum(channel, TEMPERATURE_K, {name: coupling},
+                                  tolerance=PHONON_TAIL_TOLERANCE,
+                                  normalize_at_nm=REFERENCE_WAVELENGTH_NM)
+        ratio = anchor_judd_ofelt_ratios(spectrum, SI_SIGMA_GSA_1064_M2 * 1e4)[name]
+        return np.log(ratio / target_ratio)
+
+    return float(brentq(log_ratio, *bracket, xtol=1e-3))
+
+
 def _build_spectra():
     """Build the GSA/ESA spectra and reference factors for the active model."""
     if ABSORPTION_MODEL == "phonon_band":
@@ -1434,7 +1596,12 @@ def has_avalanche(
 # ---------------------------------------------------------------------------
 
 def fit_avalanche_line(I_values, emission, fraction=SLOPE_FRACTION):
-    """Fit the widest verified straight segment near the maximum log slope."""
+    """Fit a straight segment around the maximum log slope.
+
+    fraction=None: the widest segment that meets all FIT_* criteria.
+    fraction=f: the segment where the secant slope >= f * peak; the FIT_*
+    criteria are not enforced, only reported in fit["verified"].
+    """
     intensity = np.asarray(I_values, dtype=float)
     emission = np.asarray(emission, dtype=float)
     if intensity.ndim != 1 or emission.shape != intensity.shape:
@@ -1476,6 +1643,9 @@ def fit_avalanche_line(I_values, emission, fraction=SLOPE_FRACTION):
         max_error = max(np.max(np.abs(residual)),
                         np.max(np.abs(yw-(slope*xw+intercept))))
         span = float(yw[-1]-yw[0])
+        verified = (len(xw) >= FIT_MIN_POINTS and k-lo >= 2 and hi-k >= 2
+                    and r2 >= FIT_MIN_R2 and max_error <= FIT_MAX_ERROR_DEX
+                    and slope/peak >= FIT_MIN_PEAK_RATIO and span >= FIT_MIN_SPAN_DEX)
         fit = {
             "slope": float(slope), "intercept": float(intercept),
             "x_range": (float(xw[0]), float(xw[-1])),
@@ -1485,9 +1655,9 @@ def fit_avalanche_line(I_values, emission, fraction=SLOPE_FRACTION):
             "max_error_dex": float(max_error), "span_dex": span,
             "peak_ratio": float(slope/peak),
             "method": "automatic" if fraction is None else "fixed",
+            "verified": bool(verified),
         }
-        if fraction is None and (r2 < FIT_MIN_R2 or max_error > FIT_MAX_ERROR_DEX
-                or slope/peak < FIT_MIN_PEAK_RATIO or span < FIT_MIN_SPAN_DEX):
+        if fraction is None and not verified:
             continue
         accepted.append(fit)
     if not accepted:
@@ -1654,8 +1824,8 @@ def check_thermal_population_coupling(p=None):
         if p is not None:
             sigma_gsa = p.sigma_gsa_m2 * factors[0]
             sigma_esa = p.sigma_esa_m2 * factors[1]
-            require_close(sigma_gsa, 6.0e-29, "SI sigma_GSA at 1064 nm")
-            require_close(sigma_esa, 6.4e-25, "SI sigma_ESA at 1064 nm")
+            require_close(sigma_gsa, SI_SIGMA_GSA_1064_M2, "SI sigma_GSA at 1064 nm")
+            require_close(sigma_esa, SI_SIGMA_ESA_1064_M2, "SI sigma_ESA at 1064 nm")
             checks["sigma_gsa_1064_m2"] = float(sigma_gsa)
             checks["sigma_esa_1064_m2"] = float(sigma_esa)
 
@@ -1715,6 +1885,26 @@ def adaptive_knee_scan(
         n_coarse: int = N_COARSE,
         n_knee: int = N_KNEE,
         n_polish: int = N_POLISH):
+    """Coarse intensity scan, then two zooms around the steepest point.
+
+    The coarse grid only locates the steepest point; every curve is refined.
+    The avalanche criterion (maximum local log-log slope >= MIN_AVALANCHE_SLOPE,
+    and that maximum not at the first or last point, where the knee would be
+    cut off by the intensity window) is applied to the complete refined curve,
+    i.e. to all points of the coarse grid and of both zooms together. A coarse
+    grid alone underestimates the slope of a knee (9.2 instead of 11.6 at
+    1093 nm) and would miss weak avalanches.
+
+    Ith* is the intensity of the maximum local log-log slope. Lee et al.
+    (SI Fig. S3) define the threshold as the intersection of straight fits
+    below and above the knee (pa_model.pa_threshold_broken_line); at 1064 nm
+    that gives about 23.0 instead of 24.2 kW/cm^2.
+
+    Returns (I, E, Ith*, s, avalanche_present, fit). With an avalanche, I and E
+    are the refined curve and s is the fitted slope s_fit. Without one, I and E
+    are the coarse curve (for plotting) and s is the maximum local slope of the
+    refined curve.
+    """
 
     I_coarse = np.logspace(
         np.log10(I_min),
@@ -1728,13 +1918,16 @@ def adaptive_knee_scan(
         pump_wavelength_nm
     )
 
-    present, s_coarse = has_avalanche(
+    # The coarse grid decides nothing about the avalanche; it only locates
+    # the steepest point for the zooms. Stop here only for invalid emission.
+    emission_ok, s_coarse = has_avalanche(
         I_coarse,
         E_coarse,
-        edge_margin=1
+        min_slope=-np.inf,
+        edge_margin=0
     )
 
-    if not present:
+    if not emission_ok:
         return I_coarse, E_coarse, np.nan, s_coarse, False, None
 
     def _zoom(I_grid, E_grid, n_points):
@@ -1772,6 +1965,18 @@ def adaptive_knee_scan(
     I_all = I_all[keep]
     E_all = E_all[keep]
 
+    # Avalanche criterion on all points of the refined curve. edge_margin=1:
+    # a slope maximum at the first or last point means the knee is cut off.
+    present, s_local = has_avalanche(
+        I_all,
+        E_all,
+        edge_margin=1
+    )
+
+    if not present:
+        # Plot the coarse curve only; the zoom points would pile up markers.
+        return I_coarse, E_coarse, np.nan, s_local, False, None
+
     fit = fit_avalanche_line(I_all, E_all)
     s_max = fit["slope"] if fit is not None else float("nan")
 
@@ -1779,8 +1984,158 @@ def adaptive_knee_scan(
 
 
 # ---------------------------------------------------------------------------
-# Plotting
+# Plotting: one common style for every figure (report style, no titles)
 # ---------------------------------------------------------------------------
+# - Font: Computer Modern (cmr10 + mathtext "cm"), the design of the Latin
+#   Modern font (lmodern) of the LaTeX report. Real Latin Modern is an
+#   OpenType/CFF font that matplotlib embeds incorrectly in PDF files.
+# - Size: FIG_WIDTH_IN = text width of the report (A4, 2.5-cm margins), font
+#   11 pt = \small of the 12-pt report (captions). Include the PDFs with
+#   \includegraphics[width=\linewidth]{...} so the text keeps this size.
+# - Closed frame, ticks inward on all four sides with minor ticks, no grid.
+# - No axis margins: every curve starts and ends in the corner of the axes.
+#   Linear y-axes with nonnegative data run from exactly 0 (so 0-0 sits in
+#   the corner) to the next major tick; log y-axes span whole decades.
+# SHOW_WINDOWS=False: never open separate plot windows. With the inline
+# backend (VS Code Interactive Window, Spyder Plots pane) the figures still
+# appear inline; in a plain `python` run they are only saved to disk.
+SHOW_WINDOWS = False
+FIG_WIDTH_IN = 16.0 / 2.54          # report text width: 21 cm - 2 x 2.5 cm
+FIG_HEIGHT_IN = 0.62 * FIG_WIDTH_IN
+COLOR_SIM = "#1468b1"       # simulation / numerical / ESA
+COLOR_MODEL = "#ba4a18"     # analytical / model curve / GSA
+COLOR_EXTRA = ("#2e9e5b", "#8a3ffc")
+COLOR_REF = "#7a7a7a"       # reference lines (1064 nm, intensity window)
+PLOT_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["cmr10", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.formatter.use_mathtext": True,   # cmr10 has no minus sign
+    "font.size": 11,
+    "axes.labelsize": 11,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "legend.fontsize": 10,
+    "axes.titlesize": 11,
+    "axes.edgecolor": "black",
+    "axes.linewidth": 0.8,
+    "axes.spines.top": True,
+    "axes.spines.right": True,
+    "axes.grid": False,
+    "axes.xmargin": 0.0,
+    "axes.ymargin": 0.0,
+    "xtick.direction": "in",
+    "ytick.direction": "in",
+    "xtick.top": True,
+    "ytick.right": True,
+    "xtick.minor.visible": True,
+    "ytick.minor.visible": True,
+    "xtick.major.size": 4.0,
+    "ytick.major.size": 4.0,
+    "xtick.minor.size": 2.0,
+    "ytick.minor.size": 2.0,
+    "xtick.major.width": 0.8,
+    "ytick.major.width": 0.8,
+    "xtick.minor.width": 0.6,
+    "ytick.minor.width": 0.6,
+    "legend.frameon": False,
+    "legend.handlelength": 1.8,
+    "lines.linewidth": 1.3,
+    "lines.markersize": 3.5,
+    "figure.figsize": (FIG_WIDTH_IN, FIG_HEIGHT_IN),
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.03,
+    "savefig.facecolor": "white",
+    "savefig.dpi": 300,
+    "pdf.fonttype": 42,
+    "svg.fonttype": "path",
+}
+
+
+def _new_figure(width=FIG_WIDTH_IN, height=FIG_HEIGHT_IN, ncols=1):
+    """Figure in the common style; returns (fig, ax) or (fig, axes) for ncols > 1."""
+    _require_matplotlib()
+    plt.rcParams.update(PLOT_STYLE)
+    # Embedding cmr10 in PDFs makes fontTools warn about the font's (harmless)
+    # old timestamps; keep the console clean.
+    logging.getLogger("fontTools").setLevel(logging.ERROR)
+    fig, axes = plt.subplots(1, ncols, figsize=(width, height), squeeze=False)
+    return fig, (axes[0, 0] if ncols == 1 else axes[0])
+
+
+def _wavelength_colors(n):
+    """Sequential colours for curves ordered by pump wavelength."""
+    return plt.cm.viridis(np.linspace(0.0, 0.88, max(int(n), 1)))
+
+
+def _corner_axes(ax, xlim=None, ylim=None, y_max=None):
+    """Axis limits that end exactly at the data (see the style notes above).
+
+    xlim/ylim override the automatic limits. y_max caps the automatic upper
+    limit (e.g. for thresholds that diverge where there is no avalanche).
+    """
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+        return
+    lo, hi = ax.get_ylim()  # data limits: the style has no margins
+    if y_max is not None:
+        hi = min(hi, y_max)
+    if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+        return
+    if ax.get_yscale() == "log":
+        ax.set_ylim(10.0 ** np.floor(np.log10(lo) + 1e-9),
+                    10.0 ** np.ceil(np.log10(hi) - 1e-9))
+        return
+    if lo >= 0:
+        lo = 0.0
+    ticks = np.asarray(ax.yaxis.get_major_locator().tick_values(lo, hi))
+    above = ticks[ticks >= hi - 1e-9 * abs(hi)]
+    ax.set_ylim(lo, float(above.min()) if above.size else hi)
+
+
+def _save_figure(fig, savepath):
+    if savepath:
+        fig.savefig(savepath)
+        print(f"Figure saved: {savepath}")
+
+
+def _inline_backend():
+    """True for backends that draw into the console (no separate windows)."""
+    if plt is None:
+        return False
+    backend = plt.get_backend().lower()
+    return any(key in backend for key in ("inline", "ipympl", "widget", "nbagg"))
+
+
+def _show_or_close(no_show=False):
+    """Show figures inline (Interactive Window/Spyder), never as separate windows
+    unless SHOW_WINDOWS is True; otherwise only close them (they are saved)."""
+    if plt is None:
+        return
+    if no_show or not (_inline_backend() or SHOW_WINDOWS):
+        plt.close("all")
+        return
+    # Inline: draws every figure into the console and closes it.
+    # SHOW_WINDOWS in a plain run: blocks until the windows are closed.
+    plt.show()
+
+
+@contextlib.contextmanager
+def _no_plot_windows():
+    """Stop a GUI backend in interactive mode from opening every new figure."""
+    if plt is None or SHOW_WINDOWS or _inline_backend():
+        yield
+        return
+    was_interactive = plt.isinteractive()
+    plt.ioff()
+    try:
+        yield
+    finally:
+        if was_interactive:
+            plt.ion()
+
 
 def plot_wavelength_detuning(
         curves: Dict[float, Tuple[np.ndarray, np.ndarray]],
@@ -1790,7 +2145,6 @@ def plot_wavelength_detuning(
         fit_lines: Optional[Dict[float, Optional[Dict[str, float]]]] = None,
         savepath: Optional[str] = None) -> None:
 
-    ith_label = "Ith*"
     # With a fine wavelength grid, show one curve every DETUNING_PLOT_STEP_NM
     # (all wavelengths are still in the smax/ith plots and the summary CSV).
     step = DETUNING_PLOT_STEP_NM
@@ -1801,21 +2155,19 @@ def plot_wavelength_detuning(
             curves = {lam: curves[lam] for lam in shown}
             if fit_lines:
                 fit_lines = {lam: fit_lines.get(lam) for lam in shown}
-    fig, ax = plt.subplots(figsize=(9.0, 7.0))
-    colors = plt.cm.tab20(np.linspace(0, 1, len(curves)))
+    fig, ax = _new_figure(FIG_WIDTH_IN, 0.7 * FIG_WIDTH_IN)
+    # Colour = pump wavelength (colour bar); dashed = no avalanche in the window.
+    lams = np.array(list(curves), dtype=float)
+    norm = matplotlib.colors.Normalize(lams.min(), lams.max() if lams.max() > lams.min()
+                                       else lams.min() + 1.0)
+    cmap = matplotlib.colors.ListedColormap(plt.cm.viridis(np.linspace(0.0, 0.88, 256)))
     I_lo = min(float(I.min()) for I, _E in curves.values())
     I_hi = max(float(I.max()) for I, _E in curves.values())
 
-    for (lam, (I_lam, emission)), color in zip(curves.items(), colors):
-        ith = thresholds[lam]
-        if np.isfinite(ith):
-            label = (f"{lam:.0f} nm ({ith_label} = {ith:.1f} " r"kW cm$^{-2}$)")
-            linestyle = "o-"
-        else:
-            label = f"{lam:.0f} nm (no PA in range)"
-            linestyle = "o--"
-
-        ax.loglog(I_lam, _safe_for_log(emission), linestyle, markersize=3.5, color=color, label=label)
+    for lam, (I_lam, emission) in curves.items():
+        linestyle = "-" if np.isfinite(thresholds[lam]) else "--"
+        ax.loglog(I_lam, _safe_for_log(emission), linestyle, linewidth=1.0,
+                  color=cmap(norm(lam)))
 
     if fit_lines:
         for fit in fit_lines.values():
@@ -1827,19 +2179,26 @@ def plot_wavelength_detuning(
             y1 = fit["y_range"][1] + LINE_EXTEND_DECADES
             x0 = (y0 - b) / s
             x1 = (y1 - b) / s
-            ax.loglog([10.0 ** x0, 10.0 ** x1], [10.0 ** y0, 10.0 ** y1], "-", color="k", linewidth=1.3, zorder=5, label="_nolegend_")
+            style = "-" if fit.get("verified") else "--"  # dashed: fit criteria not met
+            ax.loglog([10.0 ** x0, 10.0 ** x1], [10.0 ** y0, 10.0 ** y1], style,
+                      color="k", linewidth=1.1, zorder=5)
 
-    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)", fontsize=13)
-    ax.set_ylabel("800-nm steady-state emission intensity (a.u.)", fontsize=13)
-    ax.tick_params(axis="both", which="both", labelsize=11)
-    ax.set_xlim(I_lo, I_hi)
-    ax.grid(alpha=0.3, which="both")
-    ax.legend(fontsize=9, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=3)
-    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.32, top=0.97)
-
-    if savepath:
-        fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figure saved: {savepath}")
+    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)")
+    ax.set_ylabel("800-nm emission (a.u.)")
+    _corner_axes(ax, xlim=(I_lo, I_hi))
+    handles = [
+        matplotlib.lines.Line2D([], [], color="0.35", linestyle="-", label="Avalanche"),
+        matplotlib.lines.Line2D([], [], color="0.35", linestyle="--",
+                                label="No avalanche in window"),
+        matplotlib.lines.Line2D([], [], color="k", linewidth=1.1,
+                                label=r"Fitted slope near $I_{\mathrm{th}}^{*}$"),
+    ]
+    ax.legend(handles=handles, loc="lower right")
+    colorbar = fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax,
+                            pad=0.02, fraction=0.05)
+    colorbar.set_label("Pump wavelength (nm)")
+    colorbar.ax.tick_params(direction="in", which="both")
+    _save_figure(fig, savepath)
 
 
 def plot_smax_vs_wavelength(
@@ -1849,17 +2208,13 @@ def plot_smax_vs_wavelength(
     wavelengths = np.array(sorted(fit_lines.keys()), dtype=float)
     s_values = np.array([(float(fit_lines[lam]["slope"]) if fit_lines[lam] is not None else np.nan) for lam in wavelengths])
 
-    fig, ax = plt.subplots(figsize=(9.0, 4.8))
-    ax.plot(wavelengths, s_values, "o-", linewidth=1.4, markersize=3.5)
+    fig, ax = _new_figure()
+    ax.plot(wavelengths, s_values, "o-", color=COLOR_SIM)
     ax.set_xlabel("Pump wavelength (nm)")
-    ax.set_ylabel(r"Fitted slope $s_{\mathrm{fit}}$", fontsize=13)
-    ax.set_title(r"Slope of the verified linear segment vs. pump wavelength")
-    ax.grid(alpha=0.3, which="both")
+    ax.set_ylabel(r"Fitted slope $s_{\mathrm{fit}}$")
+    _corner_axes(ax)
     fig.tight_layout()
-
-    if savepath:
-        fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figure saved: {savepath}")
+    _save_figure(fig, savepath)
 
 
 def plot_ith_vs_wavelength(
@@ -1879,44 +2234,70 @@ def plot_ith_vs_wavelength(
     ith_num_values = np.array([float(thresholds_num[lam]) for lam in wavelengths])
     ith_ana_values = np.array([float(thresholds_ana[lam]) for lam in wavelengths])
 
-    fig, ax = plt.subplots(figsize=(9.0, 5.0))
+    fig, ax = _new_figure()
 
     # Analytical threshold (full quadratic linear-stability threshold)
     if analytical_dense is not None:
         dense_wl, dense_ith = (np.asarray(v, dtype=float) for v in analytical_dense)
         ax.plot(dense_wl, np.where(np.isfinite(dense_ith), dense_ith, np.nan), "-",
-                color="#1468b1", linewidth=1.2, label="Analytical")
+                color=COLOR_MODEL, label="Analytical")
     else:
         ax.plot(wavelengths, np.where(np.isfinite(ith_ana_values), ith_ana_values, np.nan),
-                "s--", linewidth=1.6, markersize=5, label="Analytical")
+                "s--", color=COLOR_MODEL, label="Analytical")
 
     # Numerical knee (from the simulation and knee detection)
-    ax.plot(wavelengths, ith_num_values, "o", color="#ba4a18", markersize=4,
+    ax.plot(wavelengths, ith_num_values, "o", color=COLOR_SIM,
             label=r"Numerical ($I_{\mathrm{th}}^{*}$)", zorder=5)
 
     ax.set_xlabel("Pump wavelength (nm)")
     ax.set_ylabel(r"$I_{\mathrm{th}}$ (kW cm$^{-2}$)")
-    ax.set_title(r"Photon-avalanche threshold $I_{\mathrm{th}}$ vs. pump wavelength")
 
     # Logarithmic scale to show the large variation in the analytical thresholds
     ax.set_yscale("log")
+    y_max = None
     if intensity_window_max is not None:
-        ax.axhline(intensity_window_max, color="#687684", linestyle=":", linewidth=1,
-                   label="Upper end of simulated intensity window")
-        candidates = np.concatenate((ith_num_values, ith_ana_values))
-        candidates = candidates[np.isfinite(candidates) & (candidates > 0)]
-        if candidates.size:
-            lower = 0.5 * candidates.min()
-            ax.set_ylim(lower, max(10.0 * intensity_window_max, 10.0 * lower))
-
-    ax.grid(alpha=0.3, which="both")
-    ax.legend(fontsize=10)
-
+        ax.axhline(intensity_window_max, color=COLOR_REF, linestyle=":", linewidth=1,
+                   label="Upper end of intensity window")
+        y_max = 10.0 * intensity_window_max
+    _corner_axes(ax, y_max=y_max)
+    ax.legend(loc="best")
     fig.tight_layout()
+    _save_figure(fig, savepath)
 
-    if savepath:
-        fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figure saved: {savepath}")
+
+def plot_ith_full_range(wavelengths_nm, ith, savepath=None, csvpath=None,
+                        intensity_window_max=None, y_max=ITH_FULL_Y_MAX):
+    """Analytical threshold over a wide pump range (only the analytical formula).
+
+    Gaps: no linear instability (I_th infinite). y_max caps the y-axis, where
+    I_th diverges far from the absorption bands.
+    """
+    wl = np.asarray(wavelengths_nm, dtype=float)
+    ith = np.asarray(ith, dtype=float)
+    if csvpath:
+        np.savetxt(csvpath, np.column_stack([wl, ith]), delimiter=",", fmt="%.8g",
+                   comments="", header="wavelength_nm,ith_analytical_kw_cm2")
+        print(f"Data saved: {csvpath}")
+    shown = np.where(np.isfinite(ith) & (ith > 0), ith, np.nan)
+    fig, ax = _new_figure()
+    ax.plot(wl, shown, "-", color=COLOR_MODEL, label="Analytical")
+    ax.set_yscale("log")
+    if intensity_window_max is not None:
+        ax.axhline(intensity_window_max, color=COLOR_REF, linestyle=":", linewidth=1,
+                   label="Upper end of intensity window")
+    ax.set_xlabel("Pump wavelength (nm)")
+    ax.set_ylabel(r"$I_{\mathrm{th}}$ (kW cm$^{-2}$)")
+    _corner_axes(ax, xlim=(wl.min(), wl.max()), y_max=y_max)
+    ax.legend(loc="upper center")
+    fig.tight_layout()
+    _save_figure(fig, savepath)
+    print("  Gaps: no avalanche (no linear instability). Pump channels in the model: "
+          "GSA 3H6 -> 3F4, 3H5; ESA 3F4 -> 3H4, 3F3, 3F2 (no GSA 3H6 -> 3H4 near 790 nm).")
+    finite = np.isfinite(ith)
+    if np.any(finite):
+        k = int(np.nanargmin(np.where(finite, ith, np.nan)))
+        print(f"  Lowest analytical threshold: {ith[k]:.3g} kW/cm^2 at {wl[k]:g} nm; "
+              f"avalanche possible at {100 * finite.mean():.0f}% of the grid.")
 
 
 # ---------------------------------------------------------------------------
@@ -1998,7 +2379,7 @@ def compute_detuning_curves(
                 elif fit is None:
                     print(f"  lambda_pump = {lam:.1f} nm | Ith*(num) = {Ith_lam:.2f} | Ith(ana) = {ith_ana:7.2f} kW/cm^2 | PA detected, but no adequately resolved linear fit.")
                 else:
-                    print(f"  lambda_pump = {lam:6.1f} nm | Ith*(num) = {Ith_lam:7.2f} kW/cm^2 | Ith(ana) = {ith_ana:7.2f} kW/cm^2 | s_fit = {s_max:6.2f} (peak local slope {fit['s_peak']:6.2f}) | fit over {10.0 ** fit['x_range'][0]:.2f}-{10.0 ** fit['x_range'][1]:.2f} kW/cm^2 ({fit['n_points']} pts, fraction={fit['fraction']:.2f}, R2={fit['r_squared']:.5f}, max error={fit['max_error_dex']:.3f} dex) | E({I_lam[-1]:.0f} kW/cm^2) = {emission_lam[-1]:.3g}")
+                    print(f"  lambda_pump = {lam:6.1f} nm | Ith*(num) = {Ith_lam:7.2f} kW/cm^2 | Ith(ana) = {ith_ana:7.2f} kW/cm^2 | s_fit = {s_max:6.2f} (peak local slope {fit['s_peak']:6.2f}) | fit over {10.0 ** fit['x_range'][0]:.2f}-{10.0 ** fit['x_range'][1]:.2f} kW/cm^2 ({fit['n_points']} pts, fraction={fit['fraction']:.2f}, R2={fit['r_squared']:.5f}, max error={fit['max_error_dex']:.3f} dex, verified={'yes' if fit['verified'] else 'no'}) | E({I_lam[-1]:.0f} kW/cm^2) = {emission_lam[-1]:.3g}")
 
             else:
                 emission_lam = power_dependence(I_values, p8, pump_wavelength_nm=lam)
@@ -2014,8 +2395,9 @@ def compute_detuning_curves(
     return curves, thresholds, analytical_thresholds, fit_lines
 
 
-def analytical_threshold_curve(p8, kind, step_nm=ANALYTICAL_STEP_NM):
-    """Analytical threshold on a dense grid over analytical_wavelength_ranges().
+def analytical_threshold_curve(p8, kind, step_nm=ANALYTICAL_STEP_NM, ranges=None):
+    """Analytical threshold on a dense grid over `ranges` (default:
+    analytical_wavelength_ranges()).
 
     Uses exactly the pump-rate coefficients of the kinetics. Separate ranges
     are joined with a NaN, so that a plot shows a gap between them.
@@ -2026,7 +2408,7 @@ def analytical_threshold_curve(p8, kind, step_nm=ANALYTICAL_STEP_NM):
     a32 = p8.b32 * p8.w3_r + p8.w3_nr
     wl_parts, ith_parts = [], []
     with _lineshape(kind):
-        for lo, hi in analytical_wavelength_ranges():
+        for lo, hi in (analytical_wavelength_ranges() if ranges is None else ranges):
             grid = np.linspace(lo, hi, int(np.ceil((hi - lo) / step_nm - 1e-9)) + 1)
             if kind == "stark_gaussian":
                 w_gsa, w_esa = _stark_rate_coefficients(grid, p8)  # vectorized
@@ -2097,6 +2479,10 @@ RISE_WAVELENGTHS_1450_NM = [1410.0, 1430.0, 1450.0, 1470.0]
 RISE_SIGMA_VALUES_CM1 = [3.0, 5.0, 8.5, 12.0, 16.0, 24.0, 50, 100 ,150,200]
 RISE_SIGMA_WAVELENGTHS_NM = [1064.0, 1075.0, 1090.0]
 RISE_SIGMA_WAVELENGTHS_1450_NM = [1450.0]
+# Rise time vs pump wavelength ("risewl"): pump grid in nm. Wavelengths
+# without an avalanche inside the intensity window are skipped.
+RISE_WL_MIN_NM, RISE_WL_MAX_NM, RISE_WL_STEP_NM = 1050.0, 1100.0, 0.5
+RISE_WL_REFERENCE_NM = 1064.0  # fixes the constant of the c/sqrt(R_GSA) curve
 
 # Peak finder. The rise time peaks sharply just above the threshold (critical
 # slowing down), so a coarse grid alone misses the maximum by tens of percent.
@@ -2288,38 +2674,110 @@ def compute_rise_peak_vs_sigma(p8, wavelengths_nm, sigmas, I_min, I_max):
 
 
 def plot_rise_vs_intensity(results, savepath=None):
-    fig, ax = plt.subplots(figsize=(8.0, 5.2))
-    colors = plt.cm.tab10(np.linspace(0, 1, max(len(results), 2)))
+    fig, ax = _new_figure()
+    colors = _wavelength_colors(len(results))
     for (lam, (I_grid, rt, k)), color in zip(results.items(), colors):
-        ax.plot(I_grid, rt, "o-", markersize=3.5, color=color, label=f"{lam:.0f} nm")
-        ax.plot(I_grid[k], rt[k], "*", markersize=12, color=color,
-                markeredgecolor="k", zorder=6)
+        ax.plot(I_grid, rt, "-", color=color, label=f"{lam:.0f} nm")
+        ax.plot(I_grid[k], rt[k], "o", markersize=4, color=color, zorder=6)
     ax.set_xscale(RISE_XSCALE)
     ax.set_yscale(RISE_YSCALE)
-    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)", fontsize=13)
-    ax.set_ylabel("800-nm rise time (ms)", fontsize=13)
-    ax.set_title("Rise-time signature of photon avalanching")
-    ax.grid(alpha=0.3, which="both")
-    ax.legend(fontsize=10)
+    ax.set_xlabel(r"Excitation intensity (kW cm$^{-2}$)")
+    ax.set_ylabel("800-nm rise time (ms)")
+    _corner_axes(ax)
+    ax.legend(loc="upper right")
     fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figure saved: {savepath}")
+    _save_figure(fig, savepath)
 
 
 def plot_rise_peak_vs_sigma(sigmas, peaks_by_wavelength, savepath=None):
     n = len(peaks_by_wavelength)
-    fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 4.6), squeeze=False)
-    for ax, (lam, peaks) in zip(axes[0], peaks_by_wavelength.items()):
-        ax.plot(sigmas, peaks, "o-", linewidth=1.6, markersize=5)
-        ax.set_xlabel(r"Stark Gaussian $\sigma$ (cm$^{-1}$)", fontsize=12)
-        ax.set_ylabel("Peak 800-nm rise time (ms)", fontsize=12)
-        ax.set_title(f"{lam:.0f} nm pump")
-        ax.grid(alpha=0.3, which="both")
+    fig, axes = _new_figure(FIG_WIDTH_IN, 0.4 * FIG_WIDTH_IN, ncols=n)
+    axes = np.atleast_1d(axes)
+    colors = _wavelength_colors(n)
+    for i, (ax, (lam, peaks), color) in enumerate(zip(axes, peaks_by_wavelength.items(),
+                                                    colors)):
+        ax.plot(sigmas, peaks, "o-", color=color)
+        if i == 0:
+            ax.set_ylabel("Longest rise time (ms)")
+        if i == len(axes) // 2:
+            ax.set_xlabel(r"Electronic Gaussian width $\sigma$ (cm$^{-1}$)")
+        ax.text(0.95, 0.06, f"{lam:.0f} nm", transform=ax.transAxes, ha="right",
+                va="bottom")
+        _corner_axes(ax)
     fig.tight_layout()
-    if savepath:
-        fig.savefig(savepath, format="pdf", bbox_inches="tight")
-        print(f"Figure saved: {savepath}")
+    _save_figure(fig, savepath)
+
+
+def compute_rise_vs_wavelength(p8, wavelengths_nm, I_min, I_max):
+    """Longest rise time (peak of rise time vs intensity) per pump wavelength.
+
+    Same peak search as the "rise" plot (rise_peak_scan). Wavelengths whose
+    analytical threshold lies outside [I_min, I_max], or whose peak sits at
+    the edge of the window, are skipped. Returns a dict of arrays:
+    wavelength_nm, peak_rise_time_ms, intensity_at_peak_kw_cm2,
+    ith_analytical_kw_cm2, r_gsa_at_threshold_per_s, f_gsa, f_esa.
+    """
+    a32 = p8.b32 * p8.w3_r + p8.w3_nr
+    rows = []
+    with _lineshape(ABSORPTION_KIND):
+        for lam in wavelengths_nm:
+            w_gsa, w_esa = pa_model.gsa_esa_rate_coefficients(lam, p8)
+            ith = analytical_threshold_intensity(w_gsa, w_esa, p8.w2, p8.w3, p8.s31, a32)
+            if not np.isfinite(ith) or not I_min < ith < I_max:
+                continue  # no avalanche inside the intensity window
+            I_grid, rt, k = rise_peak_scan(p8, lam, I_min, I_max)
+            if k is None or k in (0, len(I_grid) - 1):
+                continue  # peak cut off by the window
+            rows.append((lam, rt[k], I_grid[k], ith, w_gsa * ith))
+    keys = ("wavelength_nm", "peak_rise_time_ms", "intensity_at_peak_kw_cm2",
+            "ith_analytical_kw_cm2", "r_gsa_at_threshold_per_s")
+    data = {key: np.array([row[i] for row in rows], dtype=float)
+            for i, key in enumerate(keys)}
+    if rows:
+        f_gsa, f_esa = absorption_factors(data["wavelength_nm"], p8)
+        data["f_gsa"], data["f_esa"] = np.asarray(f_gsa, float), np.asarray(f_esa, float)
+    return data
+
+
+def plot_rise_vs_wavelength(data, savepath=None, csvpath=None,
+                            reference_nm=RISE_WL_REFERENCE_NM):
+    """Longest rise time vs pump wavelength, with c/sqrt(R_GSA at threshold).
+
+    The stronger the ground-state absorption that seeds the avalanche, the
+    less the system slows down at the threshold; c is fixed at reference_nm.
+    """
+    lam = data["wavelength_nm"]
+    if not len(lam):
+        print("  No wavelength with an avalanche inside the window: plot skipped.")
+        return
+    peak = data["peak_rise_time_ms"]
+    r_gsa = data["r_gsa_at_threshold_per_s"]
+    ref = int(np.argmin(np.abs(lam - reference_nm)))
+    scaling = peak[ref] * np.sqrt(r_gsa[ref] / r_gsa)
+
+    if csvpath:
+        columns = list(data) + ["scaling_prediction_ms"]
+        np.savetxt(csvpath, np.column_stack([data[c] for c in data] + [scaling]),
+                   delimiter=",", fmt="%.6g", comments="", header=",".join(columns))
+        print(f"Data saved: {csvpath}")
+
+    fig, ax = _new_figure()
+    ax.plot(lam, scaling, "-", color=COLOR_MODEL,
+            label=r"$\propto 1/\sqrt{R_\mathrm{GSA}}$ at threshold "
+                  f"(fixed at {lam[ref]:g} nm)")
+    ax.plot(lam, peak, "o", color=COLOR_SIM, label="Simulation")
+    ax.set_xlabel("Pump wavelength (nm)")
+    ax.set_ylabel("Longest 800-nm rise time (ms)")
+    _corner_axes(ax)
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    _save_figure(fig, savepath)
+
+    deviation = np.abs(peak / scaling - 1.0)
+    print(f"  {len(lam)} wavelengths with an avalanche: {lam.min():g}-{lam.max():g} nm; "
+          f"longest {peak.max():.0f} ms at {lam[peak.argmax()]:g} nm")
+    print(f"  Deviation from c/sqrt(R_GSA): median {100 * np.median(deviation):.1f}%, "
+          f"max {100 * deviation.max():.1f}%")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -2329,8 +2787,9 @@ def plot_rise_peak_vs_sigma(sigmas, peaks_by_wavelength, savepath=None):
 def absorption_factors(wavelengths_nm, p=None):
     """The SAME dimensionless cross-section factors used by the pump rates.
 
-    phonon_band, hybrid and broad_gsa: sigma(lambda)/sigma(1064 nm), f(1064)=1.
-    stark and si_1064: preserve their existing global/peak normalization.
+    phonon_band, hybrid, broad_gsa and si_1064: sigma(lambda)/sigma(1064 nm),
+    f(1064)=1 (si_1064 via pa_model.anchored_resonance_factors).
+    stark: preserves its global peak normalization.
     No extra wavelength/photon-flux multiplier is included here.
     """
     wavelengths = np.asarray(wavelengths_nm, dtype=float)
@@ -2341,7 +2800,8 @@ def absorption_factors(wavelengths_nm, p=None):
     if _USE_STARK:
         return tuple(np.asarray(v) for v in _stark_resonance_factors(wavelengths, p))
     _require_pa_model()
-    values = np.array([pa_model.resonance_factors(float(lam), p) for lam in wavelengths])
+    values = np.array([pa_model.anchored_resonance_factors(float(lam), p)
+                       for lam in wavelengths])
     return values[:, 0], values[:, 1]
 
 
@@ -2394,14 +2854,14 @@ def export_phonon_settings(save_dir):
         return
     folder = Path(save_dir)
     folder.mkdir(parents=True, exist_ok=True)
-    energies = np.asarray(PHONON_ENERGIES_CM1)
-    fractions = np.asarray(PHONON_MODE_FRACTIONS)
+    bands = np.asarray(PHONON_BANDS, dtype=float).reshape(-1, 3)
+    centers, sigmas, fractions = bands[:, 0], bands[:, 1], bands[:, 2]
     np.savetxt(folder / "phonon_band.csv", np.column_stack((
-        energies, fractions, GSA_H5_HUANG_RHYS * fractions,
+        centers, sigmas, fractions, GSA_H5_HUANG_RHYS * fractions,
         GSA_F4_HUANG_RHYS * fractions, ESA_H4_HUANG_RHYS * fractions,
         ESA_F3_HUANG_RHYS * fractions, ESA_F2_HUANG_RHYS * fractions)),
         delimiter=",", comments="", fmt="%.12g",
-        header="phonon_energy_cm1,fraction,S_k_GSA_3H5,S_k_GSA_3F4,"
+        header="band_center_cm1,band_sigma_cm1,fraction,S_k_GSA_3H5,S_k_GSA_3F4,"
                "S_k_ESA_3H4,S_k_ESA_3F3,S_k_ESA_3F2")
     metadata = {
         "absorption_model": ABSORPTION_MODEL,
@@ -2413,6 +2873,13 @@ def export_phonon_settings(save_dir):
         "judd_ofelt_use_frequency_factor": JO_USE_FREQUENCY_FACTOR,
         "judd_ofelt_sources": ["Lee et al. 2021, SI Tables S4 and S5",
                                "Carnall, Crosswhite & Crosswhite 1978, ANL-78-XX-95, Appendix XIII Table 2"],
+        "judd_ofelt_consistency": {
+            "GSA": anchor_judd_ofelt_ratios(GSA_SPECTRUM, SI_SIGMA_GSA_1064_M2 * 1e4),
+            "ESA": anchor_judd_ofelt_ratios(ESA_SPECTRUM, SI_SIGMA_ESA_1064_M2 * 1e4),
+            "refractive_index": JO_REFRACTIVE_INDEX,
+            "definition": ("integral of sigma implied by the 1064-nm SI anchor / Judd-Ofelt "
+                           "electric-dipole integral; 1 = consistent"),
+        },
         "reference_wavelength_nm": REFERENCE_WAVELENGTH_NM,
         "reference_anchor_enabled": SI_REFERENCE_ANCHOR,
         "reference_factors": [float(x) for x in
@@ -2425,7 +2892,7 @@ def export_phonon_settings(save_dir):
         "factor_definition": "sigma(lambda)/sigma(1064 nm); applied once in pump rates",
         "electronic_components": "No phonon event; same full-spectrum normalization and anchor",
         "plot_y_scales": ["linear", "log"],
-        "assumptions": "Band shape (Raman proxy), Huang-Rhys factors, electronic widths and relative Stark line strengths are uncalibrated assumptions; channel weights follow Judd-Ofelt.",
+        "assumptions": "Band shape (four Gaussians approximating a Raman curve, each used as one band with the Bose occupation of its centre), the Huang-Rhys factors except 3H6 -> 3H5 (calibrated so that the 1064-nm anchor matches the Judd-Ofelt integral), electronic widths and relative Stark line strengths are uncalibrated assumptions; channel weights follow Judd-Ofelt.",
         "sources_from_supplied_script": ["https://doi.org/10.7150/thno.5113",
                                         "https://doi.org/10.1016/j.omx.2021.100102",
                                         "https://doi.org/10.1080/0026897021000046889"],
@@ -2452,91 +2919,66 @@ def plot_absorption_factors(p, save_dir, wavelength_min_nm=900.0,
     if np.any(~np.isfinite(f_gsa)) or np.any(~np.isfinite(f_esa)):
         raise RuntimeError("Non-finite absorption factors.")
     # Evaluate every curve once; both figures reuse the same data.
-    curves = [(f_gsa, "#ba4a18", "-", 2.1, r"$f_{\mathrm{gsa}}$"),
-              (f_esa, "#1468b1", "-", 2.1, r"$f_{\mathrm{esa}}$")]
+    curves = [(f_gsa, COLOR_MODEL, "-", 1.3, r"$f_{\mathrm{GSA}}$"),
+              (f_esa, COLOR_SIM, "-", 1.3, r"$f_{\mathrm{ESA}}$")]
     if ABSORPTION_MODEL == "phonon_band":
         g_el, e_el = electronic_absorption_factors(wavelengths)
-        curves += [(g_el, "#2e9e5b", "--", 1.3, "GSA, zero-phonon only"),
-                   (e_el, "#8a3ffc", "--", 1.3, "ESA, zero-phonon only")]
+        curves += [(g_el, COLOR_EXTRA[0], "--", 1.0, "GSA, zero-phonon only"),
+                   (e_el, COLOR_EXTRA[1], "--", 1.0, "ESA, zero-phonon only")]
     span = wavelength_max_nm - wavelength_min_nm
-    peak_value = float(max(f_gsa.max(), f_esa.max()))
     positive = np.concatenate((f_gsa[f_gsa > 0], f_esa[f_esa > 0]))
-
-    if SI_REFERENCE_ANCHOR:
-        subtitle = (ABSORPTION_LABEL + r" | $f_i(\lambda)=\sigma_i(\lambda)/\sigma_i(1064\,\mathrm{nm})$"
-                    + f" | T = {TEMPERATURE_K:g} K")
-    else:
-        subtitle = f"{ABSORPTION_LABEL} | existing peak normalization | T = {TEMPERATURE_K:g} K"
-    footer = ("GSA and ESA background: off"
-              + f" | ESA sigma: {STARK_SIGMA_CM1:g} cm$^{{-1}}$"
-              + (f" | GSA H5 sigma: {GSA_H5_SIGMA_CM1:g} cm$^{{-1}}$"
-                 if ABSORPTION_MODEL == "broad_gsa" else ""))
-    if ABSORPTION_MODEL == "phonon_band":
-        footer = f"Phonon band: {PHONON_DESCRIPTION} | electronic sigma: {STARK_SIGMA_CM1:g} cm^-1"
 
     os.makedirs(save_dir, exist_ok=True)
     basename = os.path.join(save_dir,
                            f"f_gsa_f_esa_{wavelength_min_nm:g}_{wavelength_max_nm:g}nm_{ABSORPTION_MODEL}")
     figures = []
-    with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
-                         "axes.spines.top": False, "axes.spines.right": False,
-                         "svg.fonttype": "none"}):
-        for scale_name, log_y in (("linear", False), ("log", True)):
-            fig, ax = plt.subplots(figsize=(10.8, 6.4))
-            fig.subplots_adjust(left=0.11, right=0.97, bottom=0.17, top=0.81)
-            fig.suptitle(f"GSA and ESA absorption factors ({scale_name} y-axis)", x=0.11, y=0.96,
-                         ha="left", fontsize=20, fontweight="bold")
-            fig.text(0.11, 0.885, subtitle, fontsize=11, color="#526171")
+    for scale_name, log_y in (("linear", False), ("log", True)):
+        fig, ax = _new_figure()
 
-            for values, color, style, width, label in curves:
-                # Only the log axis needs zeros hidden; the linear axis shows them.
-                shown = np.where(values > 0, values, np.nan) if log_y else values
-                ax.plot(wavelengths, shown, color=color, linestyle=style,
-                        linewidth=width, label=label)
-            ax.set_yscale("log" if log_y else "linear")
-            ax.set_xlim(wavelength_min_nm, wavelength_max_nm)
-            tick_step = 50 if span >= 300 else 5
-            ax.set_xticks(np.arange(wavelength_min_nm, wavelength_max_nm+1, tick_step))
-            ax.set_xlabel("Pump wavelength (nm)", labelpad=10)
-            ax.set_ylabel("Relative absorption factor f" + (" (log scale)" if log_y else ""),
-                          labelpad=10)
-            if log_y:
-                # Gaussian tails can underflow to zero. Only the visible range is
-                # limited; the computed/exported factors are never clipped.
-                lower = max(ABSORPTION_PLOT_MIN_FACTOR,
-                            10.0**np.floor(np.log10(positive.min())))
-                upper = max(lower*10.0, 10.0**np.ceil(np.log10(positive.max())))
-            else:
-                # Upper limit follows the data: after the 1064-nm normalization
-                # the peaks can lie far above 1.
-                lower, upper = 0.0, 1.05*peak_value
-            ax.set_ylim(lower, upper)
-            ax.grid(axis="y", which="major", color="#dce3eb", linewidth=0.8)
-            ax.grid(axis="x", which="major", color="#eef1f5", linewidth=0.6)
-            ax.axvline(REFERENCE_WAVELENGTH_NM, color="#687684", linestyle="--",
-                       linewidth=1, zorder=1)
-            if SI_REFERENCE_ANCHOR:
-                ax.axhline(1.0, color="#9ba6b1", linestyle=":", linewidth=1)
-                ax.plot([REFERENCE_WAVELENGTH_NM], [1.0], "o", color="#465360", ms=5, zorder=5)
-                ax.annotate("1064 nm: both f = 1", xy=(REFERENCE_WAVELENGTH_NM, 1),
-                            xytext=(0.03, 0.80), textcoords="axes fraction",
-                            color="#465360", fontsize=10,
-                            arrowprops={"arrowstyle": "-", "color": "#687684"})
-            ax.legend(loc="upper right", frameon=False, fontsize=13)
-            if _USE_STARK and wavelength_min_nm < 1170 and wavelength_max_nm > 1290:
-                peak = int(np.argmax(f_gsa))
-                ax.annotate(r"GSA $^3H_6\rightarrow{}^3H_5$" + f"\npeak: {wavelengths[peak]:.1f} nm",
-                            xy=(wavelengths[peak], f_gsa[peak]), xytext=(1320, f_gsa[peak]*0.65),
-                            fontsize=10, color="#ba4a18",
-                            arrowprops={"arrowstyle": "-", "color": "#ba4a18"})
-            fig.text(0.11, 0.035, footer, fontsize=9, color="#526171")
-            fig.savefig(f"{basename}_{scale_name}.png", dpi=200, facecolor="white")
-            fig.savefig(f"{basename}_{scale_name}.svg", facecolor="white")
-            figures.append(fig)
+        for values, color, style, width, label in curves:
+            # Only the log axis needs zeros hidden; the linear axis shows them.
+            shown = np.where(values > 0, values, np.nan) if log_y else values
+            ax.plot(wavelengths, shown, color=color, linestyle=style,
+                    linewidth=width, label=label)
+        ax.set_yscale("log" if log_y else "linear")
+        tick_step = 100 if span >= 300 else 10
+        ax.set_xticks(np.arange(wavelength_min_nm, wavelength_max_nm+1, tick_step))
+        ax.set_xlabel("Pump wavelength (nm)")
+        ax.set_ylabel(r"Relative absorption factor $f$")
+        if SI_REFERENCE_ANCHOR:
+            ax.axhline(1.0, color=COLOR_REF, linestyle=":", linewidth=0.8)
+            ax.plot([REFERENCE_WAVELENGTH_NM], [1.0], "o", color="k", ms=3.5, zorder=5)
+            ax.annotate(r"1064 nm: $f = 1$", xy=(REFERENCE_WAVELENGTH_NM, 1),
+                        xytext=(0.03, 0.80), textcoords="axes fraction", fontsize=9,
+                        arrowprops={"arrowstyle": "-", "color": COLOR_REF,
+                                    "linewidth": 0.7})
+        if log_y:
+            # Gaussian tails can underflow to zero. Only the visible range is
+            # limited; the computed/exported factors are never clipped.
+            lower = max(ABSORPTION_PLOT_MIN_FACTOR,
+                        10.0**np.floor(np.log10(positive.min())))
+            upper = max(lower*10.0, 10.0**np.ceil(np.log10(positive.max())))
+            _corner_axes(ax, xlim=(wavelength_min_nm, wavelength_max_nm),
+                         ylim=(lower, upper))
+        else:
+            # From exactly 0 to the next tick above the highest peak: after the
+            # 1064-nm normalization the peaks can lie far above 1.
+            _corner_axes(ax, xlim=(wavelength_min_nm, wavelength_max_nm))
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=2)
+        if _USE_STARK and wavelength_min_nm < 1170 and wavelength_max_nm > 1290:
+            peak = int(np.argmax(f_gsa))
+            ax.annotate(r"GSA $^3H_6\rightarrow{}^3H_5$" + f"\npeak: {wavelengths[peak]:.1f} nm",
+                        xy=(wavelengths[peak], f_gsa[peak]), xytext=(1320, f_gsa[peak]*0.65),
+                        fontsize=9,
+                        arrowprops={"arrowstyle": "-", "color": COLOR_REF, "linewidth": 0.7})
+        fig.tight_layout()
+        for extension in ("pdf", "png", "svg"):
+            fig.savefig(f"{basename}_{scale_name}.{extension}")
+        figures.append(fig)
     _save_factor_data(basename, wavelengths, f_gsa, f_esa)
     print("GSA and ESA backgrounds: removed.")
-    print(f"Factor plots saved: {basename}_linear.png/.svg and {basename}_log.png/.svg; "
-          f"data: {basename}.csv")
+    print(f"Factor plots saved: {basename}_linear.pdf/.png/.svg and "
+          f"{basename}_log.pdf/.png/.svg; data: {basename}.csv")
     return figures, wavelengths, f_gsa, f_esa
 
 
@@ -2547,7 +2989,8 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
     if unknown:
         raise ValueError(f"Unknown plot names: {sorted(unknown)}; choose from {sorted(PLOTS)}.")
     need_detuning = plots.get("detuning") or plots.get("smax") or plots.get("ith")
-    need_kinetics = need_detuning or plots.get("rise") or plots.get("sigma")
+    need_kinetics = (need_detuning or plots.get("ith_full") or plots.get("rise")
+                     or plots.get("risewl") or plots.get("sigma"))
     import time
     t_start = time.perf_counter()
 
@@ -2572,7 +3015,10 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
     p8 = (parameters_for_sample(3, lambda0_gsa_nm=GSA_BACKGROUND_LAMBDA0_NM)
           if pa_model is not None else None)
     if save_dir is None:
-        save_dir = os.path.dirname(os.path.abspath(__file__))
+        try:
+            save_dir = os.path.dirname(os.path.abspath(__file__))
+        except NameError:  # e.g. pasted into an interactive window
+            save_dir = os.getcwd()
     export_phonon_settings(save_dir)
     t0 = time.perf_counter()
     if data_only or not plots.get("spectra"):
@@ -2585,10 +3031,7 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
     if spectra_only or data_only:
         if _USE_STARK:
             check_thermal_population_coupling(p8)
-        if not (data_only or no_show):
-            plt.show(block=False)
-        elif plt is not None:
-            plt.close("all")
+        _show_or_close(no_show or data_only)
         return
 
     print(f"ABSORPTION_MODEL = {ABSORPTION_MODEL!r} ({ABSORPTION_LABEL})")
@@ -2606,8 +3049,8 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
         else:
             print("No SI anchor and no broad background: pure Stark absorption.")
     else:
-        print("Absorption model: peak-normalized Gaussian with SI amplitudes "
-              f"(sigma_GSA = {p8.sigma_gsa_m2:.3e} m^2, "
+        print("Absorption model: Gaussian line shape normalized to the SI cross sections "
+              f"at 1064 nm (sigma_GSA = {p8.sigma_gsa_m2:.3e} m^2, "
               f"sigma_ESA = {p8.sigma_esa_m2:.3e} m^2); no Stark structure.")
 
     wavelengths_nm = detuning_wavelengths()
@@ -2684,6 +3127,20 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
     else:
         print("\nDetuning scan skipped (detuning, smax and ith are off).")
 
+    if plots.get("ith_full"):
+        t0 = time.perf_counter()
+        print(f"\n=== Analytical threshold {ITH_FULL_MIN_NM:g}-{ITH_FULL_MAX_NM:g} nm "
+              f"(step {ITH_FULL_STEP_NM:g} nm) ===")
+        wl_full, ith_full = analytical_threshold_curve(
+            p8, ABSORPTION_KIND, step_nm=ITH_FULL_STEP_NM,
+            ranges=[(ITH_FULL_MIN_NM, ITH_FULL_MAX_NM)])
+        plot_ith_full_range(
+            wl_full, ith_full,
+            savepath=os.path.join(save_dir, f"pa_ith_analytical_full_range{sfx}.pdf"),
+            csvpath=os.path.join(save_dir, f"pa_ith_analytical_full_range{sfx}.csv"),
+            intensity_window_max=float(I_values[-1]))
+        _done("ith_full", t0)
+
     # ---------------------------------------------------------------
     # Rise-time plots
     # ---------------------------------------------------------------
@@ -2704,6 +3161,21 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
     else:
         print("\nRise-time scan skipped (rise is off).")
 
+    if plots.get("risewl"):
+        t0 = time.perf_counter()
+        rise_wl_grid = _uniform_grid_nm(RISE_WL_MIN_NM, RISE_WL_MAX_NM, RISE_WL_STEP_NM)
+        print(f"\n=== Longest rise time vs pump wavelength "
+              f"({RISE_WL_MIN_NM:g}-{RISE_WL_MAX_NM:g} nm, step {RISE_WL_STEP_NM:g} nm) ===")
+        rise_wl_data = compute_rise_vs_wavelength(p8, rise_wl_grid, I_min, I_max)
+        plot_rise_vs_wavelength(
+            rise_wl_data,
+            savepath=os.path.join(save_dir, f"pa_rise_time_vs_wavelength{sfx}.pdf"),
+            csvpath=os.path.join(save_dir, f"pa_rise_time_vs_wavelength{sfx}.csv"),
+        )
+        _done("risewl", t0)
+    else:
+        print("\nRise time vs wavelength skipped (risewl is off).")
+
     # The sigma sweep only exists when there are Stark spectra
     if not plots.get("sigma"):
         print("\nSigma sweep skipped (sigma is off).")
@@ -2722,14 +3194,11 @@ def main(spectra_only=False, save_dir=None, data_only=False, no_show=False, plot
 
     print(f"\nTotal run time: {time.perf_counter() - t_start:.1f} s")
 
-    # Display all figures together.
-    # block=False prevents Spyder from remaining busy until the plot windows
-    # are manually closed.
-    if no_show:
-        plt.close("all")
-    else:
-        plt.show(block=False)
-        plt.pause(0.1)
+    # Inline (Interactive Window/Spyder): figures appear in the console.
+    # Never separate windows unless SHOW_WINDOWS; all figures are saved anyway.
+    _show_or_close(no_show)
+    if not _inline_backend() and not SHOW_WINDOWS:
+        print(f"Figures saved in {save_dir} (no plot windows: SHOW_WINDOWS = False).")
 
 
 if __name__ == "__main__":
@@ -2745,15 +3214,19 @@ if __name__ == "__main__":
     parser.add_argument("--no-show", action="store_true", help="Save plots without opening windows.")
     parser.add_argument("--output-dir", default=None, help="Directory for plots/data.")
     parser.add_argument("--phonon-model", choices=("band", "discrete"), default=PHONON_MODEL)
-    parser.add_argument("--band-min", type=float, default=BAND_MIN_CM1)
-    parser.add_argument("--band-max", type=float, default=BAND_MAX_CM1)
-    parser.add_argument("--band-step", type=float, default=BAND_STEP_CM1)
-    parser.add_argument("--band-mean", type=float, default=BAND_MEAN_CM1)
-    parser.add_argument("--band-sigma", type=float, default=BAND_SIGMA_CM1)
-    parser.add_argument("--band-profile", choices=("four_gaussian", "gaussian", "uniform", "file"),
+    parser.add_argument("--band-profile", choices=("four_gaussian", "gaussian"),
                         default=BAND_PROFILE)
-    parser.add_argument("--band-file", type=Path, default=None)
-    parser.add_argument("--coupling-h5", type=float, default=GSA_H5_HUANG_RHYS)
+    parser.add_argument("--band-mean", type=float, default=BAND_MEAN_CM1,
+                        help="Centre of the single band (--band-profile gaussian).")
+    parser.add_argument("--band-sigma", type=float, default=BAND_SIGMA_CM1,
+                        help="Sigma of the single band (--band-profile gaussian).")
+    parser.add_argument("--phonon-grid-step", type=float, default=PHONON_GRID_STEP_CM1,
+                        help="Quadrature step of the phonon-shift grid in cm^-1.")
+    h5_choice = parser.add_mutually_exclusive_group()
+    h5_choice.add_argument("--coupling-h5", type=float, default=GSA_H5_HUANG_RHYS)
+    h5_choice.add_argument("--calibrate-h5", action="store_true",
+                           help="Fit the 3H6 -> 3H5 Huang-Rhys factor to Judd-Ofelt "
+                                "(after changing the phonon band or temperature).")
     parser.add_argument("--coupling-f4", type=float, default=GSA_F4_HUANG_RHYS)
     parser.add_argument("--coupling-h4", type=float, default=ESA_H4_HUANG_RHYS)
     parser.add_argument("--coupling-f3", type=float, default=ESA_F3_HUANG_RHYS)
@@ -2770,7 +3243,11 @@ if __name__ == "__main__":
                              help="Make only these parts: " + ", ".join(PLOTS) + ".")
     plot_choice.add_argument("--skip-plots", nargs="+", choices=tuple(PLOTS), metavar="NAME",
                              help="Skip these parts; the rest follows PLOTS at the top.")
-    args = parser.parse_args()
+    # parse_known_args: Jupyter/IPython kernels (VS Code Interactive Window)
+    # pass their own arguments such as "-f kernel.json"; ignore those.
+    args, _unknown_args = parser.parse_known_args()
+    if _unknown_args and not _running_in_ipython():
+        parser.error("unrecognized arguments: " + " ".join(_unknown_args))
     if args.plots is not None:
         selected_plots = {name: name in args.plots for name in PLOTS}
     elif args.skip_plots is not None:
@@ -2786,13 +3263,20 @@ if __name__ == "__main__":
         ESA_H4_HUANG_RHYS, ESA_F3_HUANG_RHYS, ESA_F2_HUANG_RHYS = (
             args.coupling_h4, args.coupling_f3, args.coupling_f2)
         PHONON_TAIL_TOLERANCE = args.kernel_tolerance
-        profile = "file" if args.band_file is not None else args.band_profile
-        set_phonon_model(args.phonon_model, args.band_min, args.band_max,
-                         args.band_step, profile, args.band_mean, args.band_sigma, args.band_file)
+        PHONON_GRID_STEP_CM1 = args.phonon_grid_step
+        set_phonon_model(args.phonon_model, args.band_profile, args.band_mean, args.band_sigma)
+        if args.calibrate_h5:
+            GSA_H5_HUANG_RHYS = calibrate_gsa_h5_huang_rhys()
+            print(f"Calibrated 3H6 -> 3H5 Huang-Rhys factor: {GSA_H5_HUANG_RHYS:.4f}")
         GSA_SPECTRUM, ESA_SPECTRUM, _GSA_REFERENCE_FACTOR, _ESA_REFERENCE_FACTOR = _build_spectra()
         print(f"Phonons: {PHONON_DESCRIPTION}")
         for _name, _info in channel_weight_report().items():
             print(f"{_name}: S = {_info['line_strength_1e-20_cm2']:.4f} e-20 cm2, "
                   f"share in {_info['spectrum']} = {_info['share_in_spectrum']:.3f}")
-    main(spectra_only=args.spectra_only, save_dir=args.output_dir,
-         data_only=args.data_only, no_show=args.no_show, plots=selected_plots)
+        for _spectrum, _sigma_m2 in ((GSA_SPECTRUM, SI_SIGMA_GSA_1064_M2),
+                                     (ESA_SPECTRUM, SI_SIGMA_ESA_1064_M2)):
+            for _name, _ratio in anchor_judd_ofelt_ratios(_spectrum, _sigma_m2 * 1e4).items():
+                print(f"{_name}: integral from 1064-nm anchor / Judd-Ofelt = {_ratio:.2f}")
+    with _no_plot_windows():
+        main(spectra_only=args.spectra_only, save_dir=args.output_dir,
+             data_only=args.data_only, no_show=args.no_show, plots=selected_plots)
