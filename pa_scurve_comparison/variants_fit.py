@@ -1,7 +1,7 @@
 """Refit the S-curves with the two 'physical' alternatives to an intensity
 calibration error (sigma_ESA x k, or w2 / k) and rerun the 2-s protocol."""
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 import numpy as np, json
 from dataclasses import replace
 from scipy.integrate import solve_ivp

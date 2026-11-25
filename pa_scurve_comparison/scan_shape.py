@@ -6,7 +6,7 @@ Free per curve: k (intensity scale), A, b_FW. Scanned (shared): GSA/ESA ratio
 non-radiative rates (w2_nr, w3_nr scaled together along Lee's 8 % series).
 """
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 import itertools, json
 import numpy as np
 from dataclasses import replace

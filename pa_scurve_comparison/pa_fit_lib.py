@@ -11,26 +11,26 @@ from dataclasses import replace
 
 import numpy as np
 
-# numpy < 2.0 heeft geen np.trapezoid
+# numpy < 2.0 has no np.trapezoid
 trapz = getattr(np, 'trapezoid', None) or np.trapz
 
 from pathlib import Path
 import os
 
-# Alle paden relatief aan deze map, zodat het niet uitmaakt vanuit welke map
-# (Spyder, terminal) je de scripts draait.
+# All paths relative to this folder, so it does not matter from which folder
+# (Spyder, terminal) the scripts are run.
 try:
     HERE = Path(__file__).resolve().parent
-except NameError:                      # bv. geplakt in een console
+except NameError:                      # e.g. pasted into a console
     HERE = Path.cwd()
 DATA_DIR = HERE / "data"
 OUT_DIR = HERE / "results"
 OUT_DIR.mkdir(exist_ok=True)
-# Modelversie (map met pa_model.py en pa_fononband.py), in deze volgorde:
-#   1. de omgevingsvariabele PA_MODEL_DIR;
-#   2. ../Script      (lokale BONZ-map: de actuele versie, o.a. S(3H6->3H5) = 0.112);
-#   3. ../fonon_model (GitHub-repo UU_BONZ_PA_NPs: dezelfde modelcode);
-#   4. model/         (oude meegeleverde kopie van 7-11-2026, S(3H6->3H5) = 0.05).
+# Model version (folder with pa_model.py and pa_fononband.py), in this order:
+#   1. the environment variable PA_MODEL_DIR;
+#   2. ../Script      (local BONZ folder: the current version, e.g. S(3H6->3H5) = 0.112);
+#   3. ../fonon_model (GitHub repo UU_BONZ_PA_NPs: the same model code);
+#   4. model/         (old bundled copy of 7-11-2026, S(3H6->3H5) = 0.05).
 def _has_model(folder):
     return (folder / "pa_model.py").exists() and (folder / "pa_fononband.py").exists()
 
@@ -41,9 +41,9 @@ if os.environ.get("PA_MODEL_DIR"):
 else:
     MODEL_DIR = next((c for c in _CANDIDATES if _has_model(c)), None)
     if MODEL_DIR is None:
-        raise ImportError("Geen pa_model.py + pa_fononband.py gevonden in "
+        raise ImportError("No pa_model.py + pa_fononband.py found in "
                           + ", ".join(str(c) for c in _CANDIDATES)
-                          + ". Zet PA_MODEL_DIR op de map met het model.")
+                          + ". Set PA_MODEL_DIR to the folder with the model.")
 if str(MODEL_DIR) not in sys.path:
     sys.path.insert(0, str(MODEL_DIR))
 if str(HERE) not in sys.path:
@@ -52,12 +52,12 @@ if str(HERE) not in sys.path:
 import pa_model as pm          # noqa: E402
 import pa_fononband as pf      # noqa: E402
 
-# pa_model en pa_fononband moeten uit dezelfde map komen (anders zijn ze
-# eerder uit een andere map geimporteerd, bv. in dezelfde Spyder-console).
+# pa_model and pa_fononband must come from the same folder (otherwise they
+# were imported earlier from another folder, e.g. in the same Spyder console).
 for _module in (pm, pf):
     if Path(_module.__file__).resolve().parent != MODEL_DIR.resolve():
-        raise ImportError(f"{_module.__name__} komt uit {Path(_module.__file__).parent}, "
-                          f"niet uit {MODEL_DIR}. Herstart de console (kernel) en run opnieuw.")
+        raise ImportError(f"{_module.__name__} comes from {Path(_module.__file__).parent}, "
+                          f"not from {MODEL_DIR}. Restart the console (kernel) and run again.")
 MODEL_INFO = {
     "model_dir": str(MODEL_DIR),
     "absorption_model": pf.ABSORPTION_MODEL,
@@ -65,7 +65,7 @@ MODEL_INFO = {
     "stark_sigma_cm1": pf.STARK_SIGMA_CM1,
     "phonon_bands": pf.PHONON_DESCRIPTION,
 }
-print(f"[pa_fit_lib] model uit {MODEL_DIR} | S(3H6->3H5) = {pf.GSA_H5_HUANG_RHYS:g} | "
+print(f"[pa_fit_lib] model from {MODEL_DIR} | S(3H6->3H5) = {pf.GSA_H5_HUANG_RHYS:g} | "
       f"sigma = {pf.STARK_SIGMA_CM1:g} cm^-1", flush=True)
 
 
@@ -164,9 +164,9 @@ def ensemble_curve(I_peak, single_I_grid, single_E, xb, wb):
 def data_path(name):
     path = DATA_DIR / name
     if not path.exists():
-        # De meetdata staan niet in de (openbare) GitHub-repo; zie README.md.
-        raise FileNotFoundError(f"Meetbestand ontbreekt: {path}. Zet de CSV-bestanden van de "
-                                "Drive (BdJ1, 24-11-2026) in de map data/ (zie README.md).")
+        # The measurement data are not in the (public) GitHub repo; see README.md.
+        raise FileNotFoundError(f"Measurement file missing: {path}. Put the CSV files from the "
+                                "Drive (BdJ1, 24-11-2026) in the data/ folder (see README.md).")
     return path
 
 

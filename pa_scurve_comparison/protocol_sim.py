@@ -10,7 +10,7 @@ Scenario B (Cobolt FW6=4): the sweep starts right after exposure at the highest
 Order within a sweep: ascending reported intensity (order of the saved files).
 """
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 import json
 import numpy as np
 from scipy.integrate import solve_ivp

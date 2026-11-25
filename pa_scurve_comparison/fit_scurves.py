@@ -9,7 +9,7 @@ model counts = A * M(k * I_reported) + b_FW
 """
 from __future__ import annotations
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 
 import json
 import numpy as np

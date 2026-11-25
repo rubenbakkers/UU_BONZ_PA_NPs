@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Fig 3: other parts of pa_fononband vs. the BdJ1 data (24-11-2026)."""
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 import json
 import numpy as np
 import matplotlib
@@ -29,10 +29,10 @@ lam, y = load_spectrum()
 lg = np.linspace(775, 865, 600)
 a = ax[0, 0]
 y_smooth = np.convolve(y, np.ones(5) / 5, mode="same")
-a.plot(lam, y_smooth, color=INK, lw=1.2, label="gemeten (SuperK, 5-px gemiddeld)")
+a.plot(lam, y_smooth, color=INK, lw=1.2, label="measured (SuperK, 5-px average)")
 curves_a = []
-for s, ls, lab in ((0.0, "--", "model 3H4→3H6 (Stark-niveaus script, op 0 nm)"),
-                   (em["shift_nm"], "-", f"model, {em['shift_nm']:.1f} nm verschoven (fit, "
+for s, ls, lab in ((0.0, "--", "model 3H4→3H6 (Stark levels of the script, at 0 nm)"),
+                   (em["shift_nm"], "-", f"model, shifted by {em['shift_nm']:.1f} nm (fit, "
                                          f"σ = {em['sigma_cm1']:.0f} cm$^{{-1}}$)")):
     m = model_spectrum(lg, s, em["sigma_cm1"], em["amplitude"], em["background"])
     curves_a.append(m)
@@ -40,44 +40,41 @@ for s, ls, lab in ((0.0, "--", "model 3H4→3H6 (Stark-niveaus script, op 0 nm)"
 top = max(y_smooth.max(), max(c.max() for c in curves_a))
 pk_model, pk_data = em["model_peak_nm_unshifted"], em["data_peak_nm"]
 a.axvline(pk_model, color=GREY, lw=0.8); a.axvline(pk_data, color=INK2, lw=0.8)
-a.text(pk_model - 0.9, 1.1 * top, f"model\n{pk_model:.0f} nm", ha="right", fontsize=8, color=INK2)
-a.text(pk_data + 1.0, 1.1 * top, f"meting\n{pk_data:.0f} nm", ha="left", fontsize=8, color=INK2)
+a.text(pk_model - 0.9, 1.1 * top, f"model peak\n{pk_model:.0f} nm", ha="right", fontsize=8, color=INK2)
+a.text(pk_data + 1.0, 1.1 * top, f"measured peak\n{pk_data:.0f} nm", ha="left", fontsize=8, color=INK2)
 a.set_xlim(775, 865); a.set_ylim(-0.1 * top, 1.85 * top)
-a.set_xlabel("golflengte [nm]"); a.set_ylabel("cts s$^{-1}$ pixel$^{-1}$")
-a.set_title("a  Emissiespectrum vs. Stark-niveaus", loc="left", fontsize=10, color=INK)
+a.set_xlabel("wavelength [nm]"); a.set_ylabel("cts s$^{-1}$ pixel$^{-1}$")
+a.set_title("a  Emission spectrum vs. Stark levels", loc="left", fontsize=10, color=INK)
 a.legend(fontsize=7.5, loc="upper left")
 
 # (b) rise time vs I/Ith for the three explanations of the factor k
 b = ax[0, 1]
 r = np.array(rise["ratio"])
-for (name, col, ls) in (("kalibratie (I_echt = k*I_gerapp)", BLUE, "-"),
-                        ("sigma_ESA x k", ORANGE, "--"),
-                        ("w2 / k (langere 3F4-levensduur)", AQUA, "-.")):
-    lab = {"kalibratie (I_echt = k*I_gerapp)": "factor k = kalibratie",
-           "sigma_ESA x k": "factor k = σ$_{ESA}$ × k",
-           "w2 / k (langere 3F4-levensduur)": "factor k = w$_2$ / k (3F4 langer)"}[name]
+for (name, col, ls, lab) in (("calibration (I_true = k*I_reported)", BLUE, "-", "factor k = calibration"),
+                             ("sigma_ESA x k", ORANGE, "--", "factor k = σ$_{ESA}$ × k"),
+                             ("w2 / k (longer 3F4 lifetime)", AQUA, "-.", "factor k = w$_2$ / k (longer 3F4 lifetime)")):
     b.plot(r, rise[name]["t95"], color=col, ls=ls, marker="o", ms=3.5, label=lab)
-b.axhline(2.0, color=GREY, lw=1, ls=":"); b.text(1.6, 2.25, "meettijd per punt (2 s)", ha="left", fontsize=8, color=INK2)
+b.axhline(2.0, color=GREY, lw=1, ls=":"); b.text(1.6, 2.25, "dwell time per point (2 s)", ha="left", fontsize=8, color=INK2)
 b.set_yscale("log"); b.set_xlim(0.45, 3.05)
-b.set_xlabel("$I / I_{th}$"); b.set_ylabel("95%-stijgtijd [s]")
-b.set_title("b  Stijgtijd (rise-deel van het script)", loc="left", fontsize=10, color=INK)
+b.set_xlabel("$I / I_{th}$"); b.set_ylabel("95% rise time [s]")
+b.set_title("b  Rise time (rise part of the script)", loc="left", fontsize=10, color=INK)
 b.legend(fontsize=7.5, loc="upper right", bbox_to_anchor=(1.0, 0.86))
 
 # (c) 2-s protocol: under-reading vs steady state near the knee
 c = ax[1, 0]
 c.plot(prot["cobolt_FW5_A"]["I"], 100 * (np.array(prot["cobolt_FW5_A"]["dyn"]) / np.array(prot["cobolt_FW5_A"]["stat"]) - 1),
-       color=BLUE, label="Cobolt FW6=5, k = kalibratie")
+       color=BLUE, label="Cobolt FW6=5, k = calibration")
 c.plot(prot["superk_FW1_A"]["I"], 100 * (np.array(prot["superk_FW1_A"]["dyn"]) / np.array(prot["superk_FW1_A"]["stat"]) - 1),
-       color=BLUE, ls=":", label="SuperK FW6=1, k = kalibratie")
+       color=BLUE, ls=":", label="SuperK FW6=1, k = calibration")
 c.plot(var["sigma_esa_cobolt_1060"]["I"], 100 * np.array(var["sigma_esa_cobolt_1060"]["ratio"]),
        color=ORANGE, label="Cobolt FW6=5, k = σ$_{ESA}$ × k")
 c.plot(var["sigma_esa_superk_1064"]["I"], 100 * np.array(var["sigma_esa_superk_1064"]["ratio"]),
        color=ORANGE, ls=":", label="SuperK FW6=1, k = σ$_{ESA}$ × k")
 c.axhline(0, color="#dddddd", lw=1, zorder=0)
 c.set_xscale("log"); c.set_xlim(0.6, 3.2); c.set_ylim(-45, 5)
-c.set_xlabel("gerapporteerde intensiteit [kW cm$^{-2}$]")
-c.set_ylabel("2-s gemiddelde t.o.v. steady state [%]")
-c.set_title("c  Meetprotocol: oplopende sweep, 2 s per punt", loc="left", fontsize=10, color=INK)
+c.set_xlabel("reported intensity [kW cm$^{-2}$]")
+c.set_ylabel("2-s average relative to steady state [%]")
+c.set_title("c  Measurement protocol: upward sweep, 2 s per point", loc="left", fontsize=10, color=INK)
 c.legend(fontsize=7.5, loc="lower right")
 
 # (d) Cobolt FW6=4 vs FW6=5 near the knee, common background
@@ -99,12 +96,12 @@ dax.plot(Ip, Mp + 30, color=BLUE, ls="--", lw=1.3, label="model + 30 cps")
 pB = prot["cobolt_FW4_B"]; IB = np.array(pB["I"]); rB = np.array(pB["dyn"]) / np.array(pB["stat"])
 MB = A * np.exp(np.interp(np.log(k * IB), np.log(I_GRID), np.log(S))) * rB
 mB = IB < 2.3
-dax.plot(IB[mB], MB[mB], "x", color=ORANGE, ms=6, mew=1.5, label="model FW6=4, start na volle intensiteit")
+dax.plot(IB[mB], MB[mB], "x", color=ORANGE, ms=6, mew=1.5, label="model FW6=4, start after full intensity")
 dax.set_xscale("log"); dax.set_yscale("log"); dax.set_ylim(2, 2000)
-dax.set_xlabel("gerapporteerde intensiteit [kW cm$^{-2}$]"); dax.set_ylabel("emissie − 1 cps [cps]")
-dax.set_title("d  Cobolt: verschil tussen de twee sweeps", loc="left", fontsize=10, color=INK)
+dax.set_xlabel("reported intensity [kW cm$^{-2}$]"); dax.set_ylabel("emission − FW6=5 background [cps]")
+dax.set_title("d  Cobolt: difference between the two sweeps", loc="left", fontsize=10, color=INK)
 dax.legend(fontsize=7.5, loc="upper left")
 
 fig.tight_layout()
-fig.savefig(out_path("fig3_overige_scriptdelen.png"), dpi=170)
+fig.savefig(out_path("fig3_other_script_parts.png"), dpi=170)
 print("A =", A)
