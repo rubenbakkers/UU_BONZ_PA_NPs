@@ -3,22 +3,28 @@
 one after another, 2 s dwell each, counts averaged over the dwell, no settling
 time assumed. Compare with the steady-state S-curve used in the fit.
 
-Scenario A: each sweep starts in steady state at its first setting.
-Scenario B (Cobolt FW6=4): the sweep starts right after exposure at the highest
-            intensity (e.g. sample alignment at full power), i.e. in the
-            avalanched state.
+Per measurement in measurements.py:
+Scenario A: each sweep starts in steady state at its first setting; simulated
+            for the sweep through the knee (knee_fw, from summary.json) and for
+            both sweeps of compare_sweeps.
+Scenario B: the first sweep of compare_sweeps (e.g. Cobolt FW6=4) starts right
+            after exposure at the highest intensity of the measurement (e.g.
+            sample alignment at full power), i.e. in the avalanched state.
 Order within a sweep: ascending reported intensity (order of the saved files).
+Output keys: "<measurement>_FW<fw6>_<scenario>", e.g. "cobolt_1060_FW5_A".
 """
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 import json
 import numpy as np
 from scipy.integrate import solve_ivp
-from pa_fit_lib import data_path, out_path, trapz, pm, pf, lee_params, rates, load, spot_weights
+from pa_fit_lib import (out_path, trapz, pm, pf, lee_params, rates, load, spot_weights,
+                        measurements, read_summary)
 
 DWELL = 2.0
 P = pm.build_parameters(8.0, 0.0, 0.0, lambda0_gsa_nm=lee_params(3).lambda0_gsa_nm)
-summ = json.load(open(out_path("summary.json")))
+DATA = measurements()
+summ = read_summary(DATA)
 
 # coarse spot distribution (relative intensity x, area weight)
 xb_f, wb_f = spot_weights(nbins=400)
@@ -62,28 +68,24 @@ def ensemble_protocol(I_rep_seq, k, wg, we, start_I_rep):
 
 
 res = {}
-# ---- Cobolt (1060 nm) ----
-d = load(str(data_path("cobolt_1060_scurve.csv")))
-k, A = summ["cobolt_1060"]["k_ensemble"], None
-wg, we = rates(1060.0, P)
-for fw in (4, 5):
-    m = d["fw6"] == fw
-    I_seq = d["I_kWcm2"][m]
-    for scen, start in (("A", I_seq[0]), ("B", d["I_kWcm2"].max())):
-        if fw == 5 and scen == "B":
-            continue
+for name, cfg in DATA.items():
+    d = load(cfg["file"])
+    k = summ[name]["k_ensemble"]
+    wg, we = rates(cfg["wavelength_nm"], P, cfg["fwhm_nm"])
+    compare = [int(f) for f in (cfg["compare_sweeps"] or ())]
+    sweeps_A = sorted(set(compare) | {int(summ[name]["knee_fw"])})
+    runs = [(fw, "A") for fw in sweeps_A] + ([(compare[0], "B")] if compare else [])
+    for fw, scen in runs:
+        m = d["fw6"] == fw
+        if not m.any():
+            raise ValueError(f"{name}: no points with fw6={fw} (knee_fw / compare_sweeps in "
+                             "measurements.py).")
+        I_seq = d["I_kWcm2"][m]
+        start = I_seq[0] if scen == "A" else d["I_kWcm2"].max()
         dyn, stat = ensemble_protocol(I_seq, k, wg, we, start)
-        res[f"cobolt_FW{fw}_{scen}"] = dict(I=I_seq.tolist(), dyn=dyn.tolist(), stat=stat.tolist())
-        print("cobolt", fw, scen, "max dyn/stat-1 near knee:",
-              np.round((dyn / stat - 1)[:12], 3))
-# ---- SuperK (1064 nm), knee only in FW6=1 ----
-d2 = load(str(data_path("superk_1064_scurve.csv")))
-k2 = summ["superk_1064"]["k_ensemble"]
-wg2, we2 = rates(1064.0, P)
-m = d2["fw6"] == 1
-I_seq = d2["I_kWcm2"][m]
-dyn, stat = ensemble_protocol(I_seq, k2, wg2, we2, I_seq[0])
-res["superk_FW1_A"] = dict(I=I_seq.tolist(), dyn=dyn.tolist(), stat=stat.tolist())
-sel = I_seq > 0.95
-print("superk FW1 A dyn/stat-1 (I>0.95):", np.round((dyn / stat - 1)[sel][:14], 3))
+        res[f"{name}_FW{fw}_{scen}"] = dict(I=I_seq.tolist(), dyn=dyn.tolist(), stat=stat.tolist())
+        rel = dyn / stat - 1
+        j = int(np.argmin(rel))
+        print(f"{name} FW6={fw} scenario {scen}: 2-s average vs. steady state at most "
+              f"{rel[j] * 100:+.1f}% (at I = {I_seq[j]:.3f} kW/cm2)", flush=True)
 json.dump(res, open(out_path("protocol_sim.json"), "w"))

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fit pa_fononband model S-curves to the BdJ1 measurements.
+"""Fit pa_fononband model S-curves to the measurements in measurements.py.
 
 model counts = A * M(k * I_reported) + b_FW
   M : single-NP emission, or emission summed over the measured spot
@@ -9,19 +9,13 @@ model counts = A * M(k * I_reported) + b_FW
 """
 from __future__ import annotations
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # scripts in deze map vindbaar
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # make the scripts in this folder importable
 
 import json
 import numpy as np
-from pa_fit_lib import (data_path, out_path, trapz, lee_params, rates, analytical_ith, emission_curve,
-                        spot_weights, ensemble_curve, load)
-from dataclasses import replace
-import pa_model as pm
+from pa_fit_lib import (out_path, lee_params, rates, analytical_ith, emission_curve,
+                        spot_weights, ensemble_curve, load, measurements)
 
-DATA = {
-    "cobolt_1060": dict(file=str(data_path("cobolt_1060_scurve.csv")), lam=1060.0, fwhm=0.0),
-    "superk_1064": dict(file=str(data_path("superk_1064_scurve.csv")), lam=1064.0, fwhm=0.0),
-}
 REL_SCATTER = 0.10          # multiplicative scatter between repeats (~10 %)
 I_GRID = np.logspace(-2, 3, 260)   # model intensity grid [kW/cm^2]
 XB, WB = spot_weights()
@@ -58,6 +52,9 @@ def fit_k(E, d, k_grid=np.logspace(-1.5, 2.5, 401)):
             continue
         if best is None or chi2 < best[0]:
             best = (chi2, k, coef, model)
+    if best is None:
+        raise RuntimeError("fit_k: no intensity scale k in the grid gives a positive amplitude A; "
+                           "does this measurement contain an S-curve?")
     # refine
     chi2, k0, _, _ = best
     for k in k0 * np.logspace(-0.02, 0.02, 81):
@@ -71,13 +68,14 @@ def fit_k(E, d, k_grid=np.logspace(-1.5, 2.5, 401)):
 
 
 if __name__ == "__main__":
-    data = {n: load(v["file"]) for n, v in DATA.items()}
+    DATA = measurements()
+    data = {n: load(m["file"]) for n, m in DATA.items()}
     results = {}
     for sid in (3, 4, 5):
         p = lee_params(sid)
         for ens in (False, True):
             for name, cfg in DATA.items():
-                E, ith = model_curve(p, cfg["lam"], cfg["fwhm"], ens)
+                E, ith = model_curve(p, cfg["wavelength_nm"], cfg["fwhm_nm"], ens)
                 r = fit_k(E, data[name])
                 key = f"S{sid}_{'ens' if ens else 'np'}_{name}"
                 results[key] = dict(ith_model=ith, k=r["k"], ith_reported=ith / r["k"],
